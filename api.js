@@ -147,6 +147,11 @@ app.route({
   }
 })
 
-app.listen({ port: process.env.PORT || 3001 })
-  .then(console.log)
-  .catch(console.error)
+const port = process.env.PORT || 3001
+
+app.listen({ port: Number(port), host: '0.0.0.0' })
+  .then((address) => console.log(`Server listening on ${address}`))
+  .catch((err) => {
+    console.error(err)
+    process.exit(1)
+  })
