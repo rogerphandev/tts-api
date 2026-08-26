@@ -1,42 +1,48 @@
 /**
- * Edge TTS for Cloudflare Workers
+ * Edge-compatible TTS for Cloudflare Workers
  *
- * Endpoints:
+ * NO WebSocket
+ * NO Node.js
+ * NO fs
+ * NO FFmpeg
+ *
+ * Synthesis:
+ *   Azure Speech REST API
+ *
+ * Endpoints handled by index.js:
  *
  * ?engine=edge&action=groups
  * ?engine=edge&action=voices-by-group&group=en-US
  * ?engine=edge&text=Hello&voice=en-US-AriaNeural
  *
- * Cloudflare Workers compatible.
+ * Required Cloudflare secrets:
  *
- * NO Node.js
- * NO fs
- * NO FFmpeg
- * NO @andresaya/edge-tts
+ * SPEECH_KEY
+ * SPEECH_REGION
+ *
+ * Example:
+ *
+ * wrangler secret put SPEECH_KEY
+ * wrangler secret put SPEECH_REGION
  */
 
-const TRUSTED_CLIENT_TOKEN =
-  "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 
-const EDGE_TTS_URL =
-  "https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
+/* =========================================================
+   AZURE SPEECH
+========================================================= */
+
+const DEFAULT_REGION = "eastus";
 
 const VOICES_URL =
   "https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list";
 
-const CHROMIUM_FULL_VERSION =
-  "143.0.3650.75";
 
-
-/* =========================================================
-   OUTPUT FORMAT
-========================================================= */
-
-const OUTPUT_FORMAT = {
-  MP3_48: "audio-24khz-48kbitrate-mono-mp3",
-  MP3_96: "audio-24khz-96kbitrate-mono-mp3",
-  WEBM: "webm-24khz-16bit-mono-opus"
-};
+/*
+ * This is only used for compatibility with the old
+ * Edge voices list endpoint.
+ */
+const EDGE_TRUSTED_CLIENT_TOKEN =
+  "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 
 
 /* =========================================================
@@ -52,64 +58,21 @@ const CORS_HEADERS = {
 
 
 /* =========================================================
-   SEC-MS-GEC
+   OUTPUT FORMAT
 ========================================================= */
 
-async function generateSecMsGec() {
-  /*
-   * Microsoft FILETIME
-   *
-   * IMPORTANT:
-   * FILETIME = Unix seconds + 11644473600
-   * then round to 5 minutes.
-   */
+const OUTPUT_FORMATS = {
 
-  const unixSeconds =
-    Math.floor(Date.now() / 1000);
+  mp3:
+    "audio-24khz-48kbitrate-mono-mp3",
 
-  const fileTimeSeconds =
-    unixSeconds + 11644473600;
+  "mp3-96":
+    "audio-24khz-96kbitrate-mono-mp3",
 
-  const rounded =
-    fileTimeSeconds -
-    (fileTimeSeconds % 300);
+  webm:
+    "webm-24khz-16bit-mono-opus"
 
-  const windowsTicks =
-    rounded * 10000000;
-
-  const data =
-    new TextEncoder().encode(
-      `${windowsTicks}${TRUSTED_CLIENT_TOKEN}`
-    );
-
-  const hash =
-    await crypto.subtle.digest(
-      "SHA-256",
-      data
-    );
-
-  return Array
-    .from(new Uint8Array(hash))
-    .map(
-      byte =>
-        byte
-          .toString(16)
-          .padStart(2, "0")
-    )
-    .join("")
-    .toUpperCase();
-}
-
-
-/* =========================================================
-   REQUEST ID
-========================================================= */
-
-function requestId() {
-  return crypto
-    .randomUUID()
-    .replaceAll("-", "");
-}
+};
 
 
 /* =========================================================
@@ -117,58 +80,268 @@ function requestId() {
 ========================================================= */
 
 function escapeXml(value) {
+
   return String(value)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
+
 }
 
 
 /* =========================================================
-   TIMESTAMP
+   NORMALIZE RATE
 ========================================================= */
 
-function edgeTimestamp() {
-  return new Date()
-    .toUTCString()
-    .replace("UTC", "GMT");
+function normalizeRate(rate) {
+
+  if (
+    rate === undefined ||
+    rate === null ||
+    rate === ""
+  ) {
+
+    return "0%";
+
+  }
+
+
+  const value =
+    String(rate).trim();
+
+
+  /*
+   * Already Azure SSML format
+   *
+   * +10%
+   * -10%
+   * 0%
+   */
+
+  if (
+    /^[+-]?\d+%$/.test(value)
+  ) {
+
+    return value;
+
+  }
+
+
+  /*
+   * Numeric:
+   *
+   * 1
+   * 1.1
+   * 0.9
+   */
+
+  const number =
+    Number(value);
+
+
+  if (
+    Number.isFinite(number)
+  ) {
+
+    const percent =
+      Math.round(
+        (number - 1) * 100
+      );
+
+    return `${
+      percent >= 0 ? "+" : ""
+    }${percent}%`;
+
+  }
+
+
+  return "0%";
+
 }
 
 
 /* =========================================================
-   SSML
+   NORMALIZE PITCH
 ========================================================= */
 
-function createSSML(
+function normalizePitch(pitch) {
+
+  if (
+    pitch === undefined ||
+    pitch === null ||
+    pitch === ""
+  ) {
+
+    return "0Hz";
+
+  }
+
+
+  const value =
+    String(pitch).trim();
+
+
+  /*
+   * Already:
+   *
+   * +2Hz
+   * -2Hz
+   * 0Hz
+   */
+
+  if (
+    /^[+-]?\d+(?:\.\d+)?Hz$/i.test(value)
+  ) {
+
+    return value;
+
+  }
+
+
+  /*
+   * Numeric:
+   *
+   * 2
+   * -2
+   */
+
+  const number =
+    Number(value);
+
+
+  if (
+    Number.isFinite(number)
+  ) {
+
+    return `${
+      number >= 0 ? "+" : ""
+    }${number}Hz`;
+
+  }
+
+
+  return "0Hz";
+
+}
+
+
+/* =========================================================
+   NORMALIZE VOLUME
+========================================================= */
+
+function normalizeVolume(volume) {
+
+  if (
+    volume === undefined ||
+    volume === null ||
+    volume === ""
+  ) {
+
+    return "100%";
+
+  }
+
+
+  const value =
+    String(volume).trim();
+
+
+  if (
+    /^[+-]?\d+%$/.test(value)
+  ) {
+
+    return value;
+
+  }
+
+
+  const number =
+    Number(value);
+
+
+  if (
+    Number.isFinite(number)
+  ) {
+
+    return `${number}%`;
+
+  }
+
+
+  return "100%";
+
+}
+
+
+/* =========================================================
+   LANGUAGE FROM VOICE
+========================================================= */
+
+function languageFromVoice(voice) {
+
+  if (!voice) {
+
+    return "en-US";
+
+  }
+
+
+  /*
+   * en-US-AriaNeural
+   * ja-JP-NanamiNeural
+   * vi-VN-HoaiMyNeural
+   */
+
+  const parts =
+    String(voice).split("-");
+
+
+  if (
+    parts.length >= 2
+  ) {
+
+    return `${parts[0]}-${parts[1]}`;
+
+  }
+
+
+  return "en-US";
+
+}
+
+
+/* =========================================================
+   CREATE SSML
+========================================================= */
+
+function createSSML({
   text,
   voice,
-  pitch,
   rate,
+  pitch,
   volume
-) {
-  const safeText =
-    escapeXml(text);
+}) {
 
-  const safeVoice =
-    escapeXml(voice);
+  const language =
+    languageFromVoice(voice);
+
 
   return `
 <speak
   version="1.0"
   xmlns="http://www.w3.org/2001/10/synthesis"
-  xmlns:mstts="https://www.w3.org/2001/mstts"
-  xml:lang="en-US">
+  xml:lang="${escapeXml(language)}">
 
-  <voice name="${safeVoice}">
+  <voice name="${escapeXml(voice)}">
 
     <prosody
-      pitch="${escapeXml(pitch)}"
       rate="${escapeXml(rate)}"
+      pitch="${escapeXml(pitch)}"
       volume="${escapeXml(volume)}">
 
-      ${safeText}
+      ${escapeXml(text)}
 
     </prosody>
 
@@ -176,230 +349,81 @@ function createSSML(
 
 </speak>
 `.trim();
+
 }
 
 
 /* =========================================================
-   SPEECH CONFIG
+   AZURE TTS URL
 ========================================================= */
 
-function createSpeechConfig(outputFormat) {
-  return (
-    `X-Timestamp:${edgeTimestamp()}\r\n` +
-    `Content-Type:application/json; charset=utf-8\r\n` +
-    `Path:speech.config\r\n\r\n` +
+function createAzureTTSUrl(region) {
 
-    JSON.stringify({
-      context: {
-        synthesis: {
-          audio: {
-            metadataoptions: {
-              sentenceBoundaryEnabled: false,
-              wordBoundaryEnabled: true
-            },
-
-            outputFormat
-          }
-        }
-      }
-    })
-  );
-}
-
-
-/* =========================================================
-   SSML MESSAGE
-========================================================= */
-
-function createSSMLMessage(
-  text,
-  voice,
-  pitch,
-  rate,
-  volume,
-  id
-) {
-  const ssml =
-    createSSML(
-      text,
-      voice,
-      pitch,
-      rate,
-      volume
-    );
-
-  return (
-    `X-RequestId:${id}\r\n` +
-    `Content-Type:application/ssml+xml\r\n` +
-    `X-Timestamp:${edgeTimestamp()}\r\n` +
-    `Path:ssml\r\n\r\n` +
-    ssml
-  );
-}
-
-
-/* =========================================================
-   BINARY AUDIO EXTRACTION
-========================================================= */
-
-async function extractAudio(data) {
-  let bytes;
-
-  if (data instanceof ArrayBuffer) {
-
-    bytes =
-      new Uint8Array(data);
-
-  } else if (
-    typeof Blob !== "undefined" &&
-    data instanceof Blob
-  ) {
-
-    bytes =
-      new Uint8Array(
-        await data.arrayBuffer()
-      );
-
-  } else if (
-    data instanceof Uint8Array
-  ) {
-
-    bytes = data;
-
-  } else if (
-    ArrayBuffer.isView(data)
-  ) {
-
-    bytes =
-      new Uint8Array(
-        data.buffer,
-        data.byteOffset,
-        data.byteLength
-      );
-
-  } else {
-
-    return null;
-  }
-
-
-  if (bytes.length < 2) {
-    return null;
-  }
+  const normalized =
+    String(
+      region ||
+      DEFAULT_REGION
+    ).trim();
 
 
   /*
-   * Edge TTS binary frame:
-   *
-   * 2 bytes header length
-   * N bytes headers
-   * remaining bytes audio
+   * Standard Azure Speech REST endpoint
    */
 
-  const headerLength =
-    (bytes[0] << 8) |
-    bytes[1];
-
-  const audioStart =
-    2 + headerLength;
-
-
-  if (
-    audioStart > bytes.length
-  ) {
-    return null;
-  }
-
-
-  const headerBytes =
-    bytes.slice(
-      2,
-      audioStart
-    );
-
-
-  const headers =
-    new TextDecoder()
-      .decode(headerBytes);
-
-
-  if (
-    !headers
-      .toLowerCase()
-      .includes("path:audio")
-  ) {
-    return null;
-  }
-
-
-  return bytes.slice(
-    audioStart
+  return (
+    `https://${normalized}.tts.speech.microsoft.com` +
+    `/cognitiveservices/v1`
   );
+
 }
 
 
 /* =========================================================
-   CREATE EDGE TTS WEBSOCKET URL
-========================================================= */
-
-async function createEdgeUrl() {
-  const secMsGec =
-    await generateSecMsGec();
-
-  const connectionId =
-    requestId();
-
-  const url =
-    `${EDGE_TTS_URL}` +
-
-    `?TrustedClientToken=${encodeURIComponent(
-      TRUSTED_CLIENT_TOKEN
-    )}` +
-
-    `&Sec-MS-GEC=${encodeURIComponent(
-      secMsGec
-    )}` +
-
-    `&Sec-MS-GEC-Version=1-${encodeURIComponent(
-      CHROMIUM_FULL_VERSION
-    )}` +
-
-    `&ConnectionId=${connectionId}`;
-
-  return {
-    url,
-    connectionId
-  };
-}
-
-
-/* =========================================================
-   EDGE TTS SYNTHESIS
+   SYNTHESIZE USING AZURE SPEECH REST
 ========================================================= */
 
 export async function edgeTTS(
-  payload = {}
+  payload = {},
+  env = {}
 ) {
 
-  const {
-    text,
+  const text =
+    payload.text;
 
-    voice =
-      "en-US-AriaNeural",
 
-    pitch =
-      "+0Hz",
+  const voice =
+    payload.voice ||
+    "en-US-AriaNeural";
 
-    rate =
-      "0%",
 
-    volume =
-      "100%",
+  const pitch =
+    normalizePitch(
+      payload.pitch
+    );
 
-    format =
+
+  const rate =
+    normalizeRate(
+      payload.rate
+    );
+
+
+  const volume =
+    normalizeVolume(
+      payload.volume
+    );
+
+
+  const format =
+    String(
+      payload.format ||
       "mp3"
-  } = payload;
+    ).toLowerCase();
 
+
+  /* =======================================================
+     VALIDATE TEXT
+  ======================================================= */
 
   if (
     !text ||
@@ -431,101 +455,138 @@ export async function edgeTTS(
             "mp3"
         }
       },
-
       {
         status: 400,
 
         headers: {
-          ...CORS_HEADERS
+          ...CORS_HEADERS,
+
+          "Content-Type":
+            "application/json; charset=utf-8"
         }
       }
     );
+
   }
 
 
-  /* =====================================================
+  /* =======================================================
+     VALIDATE AZURE CONFIG
+  ======================================================= */
+
+  const speechKey =
+    env.SPEECH_KEY;
+
+
+  const speechRegion =
+    env.SPEECH_REGION ||
+    DEFAULT_REGION;
+
+
+  if (!speechKey) {
+
+    return Response.json(
+      {
+        message:
+          "SPEECH_KEY is not configured",
+
+        hint:
+          "Set SPEECH_KEY as a Cloudflare Worker secret"
+      },
+      {
+        status: 500,
+
+        headers: {
+          ...CORS_HEADERS,
+
+          "Content-Type":
+            "application/json; charset=utf-8"
+        }
+      }
+    );
+
+  }
+
+
+  /* =======================================================
      FORMAT
-  ===================================================== */
+  ======================================================= */
 
-  let outputFormat;
-  let contentType;
-  let filename;
+  let outputFormat =
+    OUTPUT_FORMATS.mp3;
 
 
-  switch (
-    String(format).toLowerCase()
+  let contentType =
+    "audio/mpeg";
+
+
+  let filename =
+    "edge-tts.mp3";
+
+
+  if (
+    format === "mp3-96"
   ) {
 
-    case "mp3-96":
+    outputFormat =
+      OUTPUT_FORMATS["mp3-96"];
 
-      outputFormat =
-        OUTPUT_FORMAT.MP3_96;
+    contentType =
+      "audio/mpeg";
 
-      contentType =
-        "audio/mpeg";
+    filename =
+      "edge-tts.mp3";
 
-      filename =
-        "edge-tts.mp3";
-
-      break;
-
-
-    case "webm":
-
-      outputFormat =
-        OUTPUT_FORMAT.WEBM;
-
-      contentType =
-        "audio/webm; codecs=opus";
-
-      filename =
-        "edge-tts.webm";
-
-      break;
-
-
-    case "mp3":
-
-    default:
-
-      outputFormat =
-        OUTPUT_FORMAT.MP3_48;
-
-      contentType =
-        "audio/mpeg";
-
-      filename =
-        "edge-tts.mp3";
-
-      break;
   }
 
 
-  /* =====================================================
-     CREATE URL
-  ===================================================== */
+  else if (
+    format === "webm"
+  ) {
 
-  const {
-    url,
-    connectionId
-  } =
-    await createEdgeUrl();
+    outputFormat =
+      OUTPUT_FORMATS.webm;
+
+    contentType =
+      "audio/webm; codecs=opus";
+
+    filename =
+      "edge-tts.webm";
+
+  }
 
 
-  /*
-   * IMPORTANT
-   *
-   * Cloudflare Workers supports outbound
-   * WebSocket through fetch().
-   *
-   * Do NOT use:
-   *
-   * new WebSocket(...)
-   *
-   * here.
-   */
+  /* =======================================================
+     SSML
+  ======================================================= */
+
+  const ssml =
+    createSSML({
+      text:
+        String(text),
+
+      voice,
+
+      rate,
+
+      pitch,
+
+      volume
+    });
+
+
+  /* =======================================================
+     AZURE REQUEST
+  ======================================================= */
+
+  const url =
+    createAzureTTSUrl(
+      speechRegion
+    );
+
 
   let response;
+
 
   try {
 
@@ -533,429 +594,149 @@ export async function edgeTTS(
       await fetch(
         url,
         {
+          method:
+            "POST",
+
           headers: {
-            "Upgrade":
-              "websocket"
-          }
+
+            "Ocp-Apim-Subscription-Key":
+              speechKey,
+
+            "Content-Type":
+              "application/ssml+xml",
+
+            "X-Microsoft-OutputFormat":
+              outputFormat,
+
+            "User-Agent":
+              "Cloudflare-Worker-TTS"
+          },
+
+          body:
+            ssml
         }
       );
 
   } catch (error) {
 
     throw new Error(
-      `Edge TTS WebSocket connection failed: ${
+      `Azure Speech request failed: ${
         error?.message ||
-        "unknown error"
+        "network error"
       }`
     );
+
   }
 
 
-  /*
-   * Cloudflare successful WebSocket handshake
-   * exposes response.webSocket.
-   *
-   * Do NOT reject based only on status 101.
-   */
+  /* =======================================================
+     AZURE ERROR
+  ======================================================= */
 
-  const ws =
-    response?.webSocket;
+  if (!response.ok) {
 
-
-  if (!ws) {
-
-    let errorBody = "";
+    let errorText = "";
 
     try {
-      errorBody =
+
+      errorText =
         await response.text();
+
     } catch {}
 
 
     throw new Error(
-      `Edge TTS WebSocket handshake failed: ${
+      `Azure Speech HTTP ${
         response.status
-      } ${
-        response.statusText || ""
-      } ${
-        errorBody
-          ? errorBody.slice(0, 500)
+      }${
+        errorText
+          ? `: ${errorText.slice(0, 500)}`
           : ""
-      }`.trim()
+      }`
     );
+
   }
 
 
-  /*
-   * IMPORTANT:
-   * accept() the outbound WebSocket.
-   */
+  /* =======================================================
+     AUDIO
+  ======================================================= */
 
-  ws.accept();
-
-
-  const audioChunks = [];
-
-  let finished = false;
-  let audioReceived = false;
+  const audio =
+    await response.arrayBuffer();
 
 
-  return await new Promise(
-    (resolve, reject) => {
+  if (
+    !audio ||
+    audio.byteLength === 0
+  ) {
 
-      const timeout =
-        setTimeout(
-          () => {
+    throw new Error(
+      "Azure Speech returned empty audio"
+    );
 
-            finish(
-              new Error(
-                "Edge TTS WebSocket timeout"
-              )
-            );
-
-          },
-          30000
-        );
+  }
 
 
-      /* =================================================
-         FINISH
-      ================================================= */
+  /* =======================================================
+     RETURN MP3
+  ======================================================= */
 
-      function finish(
-        error = null
-      ) {
+  return new Response(
+    audio,
+    {
+      status: 200,
 
-        if (finished) {
-          return;
-        }
+      headers: {
 
-        finished = true;
+        "Content-Type":
+          contentType,
 
-        clearTimeout(timeout);
+        "Content-Disposition":
+          `inline; filename="${filename}"`,
 
+        "Content-Length":
+          String(
+            audio.byteLength
+          ),
 
-        try {
-          ws.close();
-        } catch {}
+        ...CORS_HEADERS
 
-
-        if (error) {
-          reject(error);
-          return;
-        }
-
-
-        if (
-          !audioChunks.length
-        ) {
-
-          reject(
-            new Error(
-              "Edge TTS returned no audio"
-            )
-          );
-
-          return;
-        }
-
-
-        let totalLength = 0;
-
-
-        for (
-          const chunk
-          of audioChunks
-        ) {
-
-          totalLength +=
-            chunk.length;
-        }
-
-
-        const output =
-          new Uint8Array(
-            totalLength
-          );
-
-
-        let offset = 0;
-
-
-        for (
-          const chunk
-          of audioChunks
-        ) {
-
-          output.set(
-            chunk,
-            offset
-          );
-
-          offset +=
-            chunk.length;
-        }
-
-
-        resolve(
-          new Response(
-            output,
-            {
-              status: 200,
-
-              headers: {
-                "Content-Type":
-                  contentType,
-
-                "Content-Disposition":
-                  `inline; filename="${filename}"`,
-
-                "Content-Length":
-                  String(
-                    output.byteLength
-                  ),
-
-                ...CORS_HEADERS
-              }
-            }
-          )
-        );
       }
-
-
-      /* =================================================
-         OPEN
-      ================================================= */
-
-      ws.addEventListener(
-        "open",
-        () => {
-
-          try {
-
-            /*
-             * speech.config
-             */
-
-            ws.send(
-              createSpeechConfig(
-                outputFormat
-              )
-            );
-
-
-            /*
-             * SSML
-             */
-
-            ws.send(
-              createSSMLMessage(
-                String(text),
-                voice,
-                pitch,
-                rate,
-                volume,
-                connectionId
-              )
-            );
-
-          } catch (error) {
-
-            finish(error);
-          }
-        }
-      );
-
-
-      /* =================================================
-         MESSAGE
-      ================================================= */
-
-      ws.addEventListener(
-        "message",
-        async event => {
-
-          try {
-
-            /*
-             * Binary message
-             */
-
-            const audio =
-              await extractAudio(
-                event.data
-              );
-
-
-            if (audio) {
-
-              audioReceived = true;
-
-              audioChunks.push(
-                audio
-              );
-
-              return;
-            }
-
-
-            /*
-             * Text message
-             */
-
-            if (
-              typeof event.data ===
-              "string"
-            ) {
-
-              const message =
-                event.data;
-
-
-              /*
-               * turn.end
-               */
-
-              if (
-                message.includes(
-                  "Path:turn.end"
-                )
-              ) {
-
-                finish();
-
-                return;
-              }
-
-
-              /*
-               * session.end
-               */
-
-              if (
-                message.includes(
-                  "Path:session.end"
-                )
-              ) {
-
-                finish();
-
-                return;
-              }
-
-
-              /*
-               * Error from Microsoft
-               */
-
-              if (
-                message
-                  .toLowerCase()
-                  .includes("error")
-              ) {
-
-                console.error(
-                  "Edge TTS response:",
-                  message
-                );
-              }
-            }
-
-          } catch (error) {
-
-            finish(error);
-          }
-        }
-      );
-
-
-      /* =================================================
-         ERROR
-      ================================================= */
-
-      ws.addEventListener(
-        "error",
-        event => {
-
-          console.error(
-            "Edge TTS WebSocket error:",
-            event
-          );
-
-          finish(
-            new Error(
-              "Edge TTS WebSocket error"
-            )
-          );
-        }
-      );
-
-
-      /* =================================================
-         CLOSE
-      ================================================= */
-
-      ws.addEventListener(
-        "close",
-        () => {
-
-          if (finished) {
-            return;
-          }
-
-
-          /*
-           * Microsoft can close immediately
-           * after the final audio packet.
-           */
-
-          if (audioReceived) {
-
-            finish();
-
-          } else {
-
-            finish(
-              new Error(
-                "Edge TTS WebSocket closed without audio"
-              )
-            );
-          }
-        }
-      );
-
     }
   );
+
 }
 
 
 /* =========================================================
-   GET VOICES
+   GET EDGE VOICES
 ========================================================= */
 
 export async function getEdgeVoices() {
 
   const url =
     `${VOICES_URL}` +
-    `?trustedclienttoken=${encodeURIComponent(
-      TRUSTED_CLIENT_TOKEN
-    )}`;
+    `?trustedclienttoken=` +
+    encodeURIComponent(
+      EDGE_TRUSTED_CLIENT_TOKEN
+    );
 
 
   const response =
     await fetch(
       url,
       {
+        method:
+          "GET",
+
         headers: {
 
           "Accept":
-            "*/*",
+            "application/json",
 
           "User-Agent":
-            `Mozilla/5.0 (Windows NT 10.0; Win64; x64) ` +
-            `AppleWebKit/537.36 (KHTML, like Gecko) ` +
-            `Chrome/${CHROMIUM_FULL_VERSION} ` +
-            `Safari/537.36 Edg/${CHROMIUM_FULL_VERSION}`
+            "Mozilla/5.0"
         }
       }
     );
@@ -963,23 +744,41 @@ export async function getEdgeVoices() {
 
   if (!response.ok) {
 
-    const text =
+    const errorText =
       await response.text()
         .catch(() => "");
+
 
     throw new Error(
       `Edge voices request failed: ${
         response.status
-      } ${
-        text
-          ? text.slice(0, 500)
+      }${
+        errorText
+          ? `: ${errorText.slice(0, 300)}`
           : ""
       }`
     );
+
   }
 
 
-  return await response.json();
+  const data =
+    await response.json();
+
+
+  if (
+    !Array.isArray(data)
+  ) {
+
+    throw new Error(
+      "Edge voices API returned invalid data"
+    );
+
+  }
+
+
+  return data;
+
 }
 
 
@@ -991,57 +790,38 @@ function localeToLabel(
   locale
 ) {
 
+  if (
+    !locale ||
+    !String(locale).includes("-")
+  ) {
+
+    return locale;
+
+  }
+
+
   try {
 
-    if (
-      !locale ||
-      !locale.includes("-")
-    ) {
-
-      return locale;
-    }
-
-
-    /*
-     * Special locales such as:
-     *
-     * iu-Cans-CA
-     * iu-Latn-CA
-     *
-     * have 3 sections.
-     */
-
     const parts =
-      locale.split("-");
+      String(locale).split("-");
 
 
-    let languageCode;
-    let regionCode;
+    const languageCode =
+      parts[0];
 
 
-    if (parts.length >= 3) {
-
-      languageCode =
-        parts[0];
-
-      regionCode =
-        parts[parts.length - 1];
-
-    } else {
-
-      languageCode =
-        parts[0];
-
-      regionCode =
-        parts[1];
-    }
+    const regionCode =
+      parts.length >= 3
+        ? parts[parts.length - 1]
+        : parts[1];
 
 
     const language =
       new Intl.DisplayNames(
         ["en"],
         {
-          type: "language"
+          type:
+            "language"
         }
       ).of(
         languageCode
@@ -1052,7 +832,8 @@ function localeToLabel(
       new Intl.DisplayNames(
         ["en"],
         {
-          type: "region"
+          type:
+            "region"
         }
       ).of(
         regionCode
@@ -1065,6 +846,7 @@ function localeToLabel(
     ) {
 
       return locale;
+
     }
 
 
@@ -1073,7 +855,9 @@ function localeToLabel(
   } catch {
 
     return locale;
+
   }
+
 }
 
 
@@ -1085,16 +869,6 @@ export async function edgeTTSGroups() {
 
   const allVoices =
     await getEdgeVoices();
-
-
-  if (
-    !Array.isArray(allVoices)
-  ) {
-
-    throw new Error(
-      "Edge voices API returned invalid data"
-    );
-  }
 
 
   const map =
@@ -1110,7 +884,9 @@ export async function edgeTTSGroups() {
       !voice ||
       !voice.Locale
     ) {
+
       continue;
+
     }
 
 
@@ -1132,13 +908,17 @@ export async function edgeTTSGroups() {
             )
         }
       );
+
     }
+
   }
 
 
   const options =
     Array
-      .from(map.values())
+      .from(
+        map.values()
+      )
       .sort(
         (a, b) =>
           a.value.localeCompare(
@@ -1147,26 +927,15 @@ export async function edgeTTSGroups() {
       );
 
 
-  /*
-   * IMPORTANT:
-   *
-   * Return plain object.
-   *
-   * index.js will wrap this into:
-   *
-   * {
-   *   statusCode,
-   *   headers,
-   *   body
-   * }
-   */
-
   return {
+
     totalLocales:
       options.length,
 
     options
+
   };
+
 }
 
 
@@ -1185,16 +954,6 @@ export async function edgeTTSVoicesByGroup(
 
   const allVoices =
     await getEdgeVoices();
-
-
-  if (
-    !Array.isArray(allVoices)
-  ) {
-
-    throw new Error(
-      "Edge voices API returned invalid data"
-    );
-  }
 
 
   const voices =
@@ -1219,18 +978,34 @@ export async function edgeTTSVoicesByGroup(
             voice.LocalName ||
             voice.Name ||
             ""
-          }`.trim()
+          }`.trim(),
+
+        gender:
+          voice.Gender ||
+          null,
+
+        locale:
+          voice.Locale ||
+          group,
+
+        shortName:
+          voice.ShortName ||
+          voice.Name ||
+          null
 
       })
     );
 
 
   return {
+
     group,
 
     total:
       options.length,
 
     options
+
   };
+
 }
