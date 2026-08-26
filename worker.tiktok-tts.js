@@ -1,14 +1,6 @@
 const WEILBYTE_ENDPOINT =
   "https://tiktok-tts.weilnet.workers.dev";
 
-/**
- * Generate TikTok TTS
- *
- * Cloudflare Workers compatible
- *
- * @param {Object} payload
- * @returns {Promise<Uint8Array>}
- */
 export async function generateTikTokTTS(payload = {}) {
 
   const text =
@@ -32,62 +24,59 @@ export async function generateTikTokTTS(payload = {}) {
 
   try {
 
+    const url =
+      `${WEILBYTE_ENDPOINT}/api/generation`;
+
+    const requestBody = {
+      text: text,
+      voice: voice
+    };
+
+    console.log(
+      "TikTok request:",
+      url,
+      requestBody
+    );
+
     const response =
-      await fetch(
-        `${WEILBYTE_ENDPOINT}/api/generation`,
-        {
-          method: "POST",
+      await fetch(url, {
+        method: "POST",
 
-          headers: {
-            "Content-Type":
-              "application/json",
-            "Accept":
-              "application/json"
-          },
+        headers: {
+          "Content-Type":
+            "application/json",
+          "Accept":
+            "application/json",
+          "User-Agent":
+            "Mozilla/5.0"
+        },
 
-          body: JSON.stringify({
-            text,
-            voice
-          }),
+        body:
+          JSON.stringify(requestBody),
 
-          signal: controller.signal
-        }
-      );
+        signal:
+          controller.signal
+      });
 
-    /*
-     * Đọc response trước.
-     * Không throw ngay để lấy message
-     * thật từ API TikTok.
-     */
-
-    const responseText =
+    const raw =
       await response.text();
+
+    console.log(
+      "TikTok status:",
+      response.status
+    );
+
+    console.log(
+      "TikTok response:",
+      raw
+    );
 
     if (!response.ok) {
 
-      let errorMessage =
-        `TikTok TTS HTTP ${response.status}`;
-
-      try {
-
-        const errorData =
-          JSON.parse(responseText);
-
-        errorMessage =
-          errorData?.message ||
-          errorData?.error ||
-          errorMessage;
-
-      } catch {
-        if (responseText) {
-          errorMessage +=
-            `: ${responseText.slice(0, 500)}`;
-        }
-      }
-
       throw new Error(
-        errorMessage
+        `TikTok TTS HTTP ${response.status}: ${raw || "Empty response"}`
       );
+
     }
 
     let result;
@@ -95,54 +84,30 @@ export async function generateTikTokTTS(payload = {}) {
     try {
 
       result =
-        JSON.parse(responseText);
+        JSON.parse(raw);
 
     } catch {
 
       throw new Error(
-        "TikTok TTS returned invalid JSON"
+        "TikTok TTS returned invalid JSON: " +
+        raw.slice(0, 500)
       );
 
     }
 
-    if (!result) {
-      throw new Error(
-        "TikTok TTS returned empty response"
-      );
-    }
-
-    /*
-     * Weilnet thường trả:
-     *
-     * {
-     *   success: true,
-     *   data: "BASE64..."
-     * }
-     */
-
-    if (!result.success) {
+    if (
+      !result ||
+      !result.success ||
+      !result.data
+    ) {
 
       throw new Error(
-        result.message ||
-        result.error ||
-        "TikTok TTS generation failed"
+        result?.message ||
+        result?.error ||
+        "No audio data returned from TikTok TTS"
       );
 
     }
-
-    if (!result.data) {
-
-      throw new Error(
-        "TikTok TTS returned no audio data"
-      );
-
-    }
-
-    /*
-     * Base64 → Uint8Array
-     *
-     * Không dùng Buffer.
-     */
 
     const binary =
       atob(result.data);
@@ -157,15 +122,9 @@ export async function generateTikTokTTS(payload = {}) {
       i < binary.length;
       i++
     ) {
+
       audio[i] =
         binary.charCodeAt(i);
-    }
-
-    if (audio.length === 0) {
-
-      throw new Error(
-        "TikTok TTS returned empty audio"
-      );
 
     }
 
@@ -184,10 +143,7 @@ export async function generateTikTokTTS(payload = {}) {
 
     }
 
-    throw new Error(
-      error?.message ||
-      "TikTok TTS failed"
-    );
+    throw error;
 
   } finally {
 
