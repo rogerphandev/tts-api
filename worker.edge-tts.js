@@ -1,46 +1,70 @@
 /**
- * worker.edge-tts.js
- *
- * Microsoft Edge TTS for Cloudflare Workers
+ * =========================================================
+ * EDGE TTS - CLOUDFLARE WORKERS
+ * =========================================================
  *
  * NO SPEECH_KEY
  * NO AZURE KEY
- * NO Node.js
- * NO fs
- * NO FFmpeg
+ * NO NODE.JS
+ * NO FS
+ * NO FFMPEG
+ * NO @andresaya/edge-tts
  *
- * Endpoints are handled by index.js:
+ * Supported:
+ *
+ * ?engine=edge&text=Hello&voice=en-US-AriaNeural
  *
  * ?engine=edge&action=groups
+ *
  * ?engine=edge&action=voices-by-group&group=en-US
- * ?engine=edge&text=Hello&voice=en-US-AriaNeural
+ *
+ * Formats:
+ *   mp3
+ *   mp3-96
+ *   webm
+ *
+ * IMPORTANT:
+ *
+ * Cloudflare outbound WebSocket:
+ *
+ * fetch("https://...", {
+ *   headers: {
+ *     Upgrade: "websocket"
+ *   }
+ * })
+ *
+ * NOT:
+ *
+ * fetch("wss://...")
+ *
+ * =========================================================
  */
+
+
+/* =========================================================
+   EDGE TTS CONFIG
+========================================================= */
 
 const TRUSTED_CLIENT_TOKEN =
   "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 
-const EDGE_BASE =
-  "speech.platform.bing.com";
 
-const EDGE_WSS_URL =
-  `wss://${EDGE_BASE}/consumer/speech/synthesize/readaloud/edge/v1`;
+const EDGE_TTS_URL =
+  "https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
+
 
 const VOICES_URL =
-  `https://${EDGE_BASE}/consumer/speech/synthesize/readaloud/voices/list`;
+  "https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list";
 
 
 /*
- * Keep this synchronized with the current Edge TTS
- * Chromium version used by current implementations.
+ * Chromium version used for Sec-MS-GEC-Version.
+ *
+ * This value is not a SPEECH_KEY.
  */
+
 const CHROMIUM_FULL_VERSION =
   "143.0.3650.75";
-
-const CHROMIUM_MAJOR_VERSION =
-  CHROMIUM_FULL_VERSION.split(".")[0];
-
-const SEC_MS_GEC_VERSION =
-  `1-${CHROMIUM_FULL_VERSION}`;
 
 
 /* =========================================================
@@ -48,6 +72,7 @@ const SEC_MS_GEC_VERSION =
 ========================================================= */
 
 const OUTPUT_FORMAT = {
+
   MP3_48:
     "audio-24khz-48kbitrate-mono-mp3",
 
@@ -56,55 +81,7 @@ const OUTPUT_FORMAT = {
 
   WEBM:
     "webm-24khz-16bit-mono-opus"
-};
 
-
-/* =========================================================
-   HEADERS
-========================================================= */
-
-const USER_AGENT =
-  `Mozilla/5.0 (Windows NT 10.0; Win64; x64) ` +
-  `AppleWebKit/537.36 (KHTML, like Gecko) ` +
-  `Chrome/${CHROMIUM_MAJOR_VERSION}.0.0.0 ` +
-  `Safari/537.36 ` +
-  `Edg/${CHROMIUM_MAJOR_VERSION}.0.0.0`;
-
-
-const BASE_HEADERS = {
-  "User-Agent":
-    USER_AGENT,
-
-  "Accept-Encoding":
-    "gzip, deflate, br, zstd",
-
-  "Accept-Language":
-    "en-US,en;q=0.9"
-};
-
-
-const VOICE_HEADERS = {
-  ...BASE_HEADERS,
-
-  "Accept":
-    "*/*",
-
-  "Referer":
-    "https://speech.platform.bing.com/"
-};
-
-
-const WSS_HEADERS = {
-  ...BASE_HEADERS,
-
-  "Pragma":
-    "no-cache",
-
-  "Cache-Control":
-    "no-cache",
-
-  "Origin":
-    "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold"
 };
 
 
@@ -113,55 +90,22 @@ const WSS_HEADERS = {
 ========================================================= */
 
 const CORS_HEADERS = {
+
   "Cache-Control":
-    "no-store",
+    "no-store"
 
-  "Access-Control-Allow-Origin":
-    "*",
-
-  "Access-Control-Allow-Headers":
-    "*",
-
-  "Access-Control-Allow-Methods":
-    "GET, POST, OPTIONS"
 };
 
 
 /* =========================================================
-   RANDOM ID
+   REQUEST ID
 ========================================================= */
 
-function randomId() {
+function requestId() {
 
   return crypto
     .randomUUID()
-    .replaceAll("-", "")
-    .toUpperCase();
-
-}
-
-
-/* =========================================================
-   MUID
-========================================================= */
-
-function generateMuid() {
-
-  const bytes =
-    new Uint8Array(16);
-
-  crypto.getRandomValues(bytes);
-
-  return Array
-    .from(bytes)
-    .map(
-      b =>
-        b
-          .toString(16)
-          .padStart(2, "0")
-    )
-    .join("")
-    .toUpperCase();
+    .replaceAll("-", "");
 
 }
 
@@ -173,13 +117,11 @@ function generateMuid() {
 async function generateSecMsGec() {
 
   /*
-   * Microsoft FILETIME:
+   * Microsoft FILETIME
    *
-   * Unix seconds
-   * +
-   * 11644473600
+   * Unix epoch:
    *
-   * rounded to 5 minutes.
+   * 11644473600 seconds
    */
 
   const unixSeconds =
@@ -193,6 +135,10 @@ async function generateSecMsGec() {
     11644473600;
 
 
+  /*
+   * Round down to 5 minutes.
+   */
+
   const rounded =
     fileTimeSeconds -
     (
@@ -204,13 +150,14 @@ async function generateSecMsGec() {
     rounded * 10000000;
 
 
-  const input =
+  const value =
     `${windowsTicks}${TRUSTED_CLIENT_TOKEN}`;
 
 
   const data =
-    new TextEncoder()
-      .encode(input);
+    new TextEncoder().encode(
+      value
+    );
 
 
   const hash =
@@ -284,165 +231,6 @@ function escapeXml(value) {
 
 
 /* =========================================================
-   NORMALIZE RATE
-========================================================= */
-
-function normalizeRate(rate) {
-
-  if (
-    rate === undefined ||
-    rate === null ||
-    rate === ""
-  ) {
-    return "0%";
-  }
-
-
-  const value =
-    String(rate)
-      .replace("%", "")
-      .trim();
-
-
-  const number =
-    Number(value);
-
-
-  if (
-    !Number.isFinite(number)
-  ) {
-    throw new Error(
-      "Invalid rate"
-    );
-  }
-
-
-  const clamped =
-    Math.max(
-      -100,
-      Math.min(
-        100,
-        number
-      )
-    );
-
-
-  return (
-    clamped >= 0
-      ? `+${clamped}%`
-      : `${clamped}%`
-  );
-
-}
-
-
-/* =========================================================
-   NORMALIZE PITCH
-========================================================= */
-
-function normalizePitch(pitch) {
-
-  if (
-    pitch === undefined ||
-    pitch === null ||
-    pitch === ""
-  ) {
-    return "0Hz";
-  }
-
-
-  const value =
-    String(pitch)
-      .replace("Hz", "")
-      .trim();
-
-
-  const number =
-    Number(value);
-
-
-  if (
-    !Number.isFinite(number)
-  ) {
-    throw new Error(
-      "Invalid pitch"
-    );
-  }
-
-
-  const clamped =
-    Math.max(
-      -100,
-      Math.min(
-        100,
-        number
-      )
-    );
-
-
-  return (
-    clamped >= 0
-      ? `+${clamped}Hz`
-      : `${clamped}Hz`
-  );
-
-}
-
-
-/* =========================================================
-   NORMALIZE VOLUME
-========================================================= */
-
-function normalizeVolume(volume) {
-
-  if (
-    volume === undefined ||
-    volume === null ||
-    volume === ""
-  ) {
-    return "0%";
-  }
-
-
-  const value =
-    String(volume)
-      .replace("%", "")
-      .trim();
-
-
-  const number =
-    Number(value);
-
-
-  if (
-    !Number.isFinite(number)
-  ) {
-    throw new Error(
-      "Invalid volume"
-    );
-  }
-
-
-  const clamped =
-    Math.max(
-      -100,
-      Math.min(
-        100,
-        number
-      )
-    );
-
-
-  return (
-    clamped >= 0
-      ? `+${clamped}%`
-      : `${clamped}%`
-  );
-
-}
-
-
-/* =========================================================
    SSML
 ========================================================= */
 
@@ -454,35 +242,28 @@ function createSSML(
   volume
 ) {
 
-  const safeText =
-    escapeXml(text);
+  return `
+<speak
+  version="1.0"
+  xmlns="http://www.w3.org/2001/10/synthesis"
+  xmlns:mstts="https://www.w3.org/2001/mstts"
+  xml:lang="en-US">
 
-  const safeVoice =
-    escapeXml(voice);
+  <voice name="${escapeXml(voice)}">
 
+    <prosody
+      pitch="${escapeXml(pitch)}"
+      rate="${escapeXml(rate)}"
+      volume="${escapeXml(volume)}">
 
-  return (
-    `<speak ` +
-    `version="1.0" ` +
-    `xmlns="http://www.w3.org/2001/10/synthesis" ` +
-    `xmlns:mstts="https://www.w3.org/2001/mstts" ` +
-    `xml:lang="en-US">` +
+      ${escapeXml(text)}
 
-    `<voice name="${safeVoice}">` +
+    </prosody>
 
-    `<prosody ` +
-    `pitch="${escapeXml(pitch)}" ` +
-    `rate="${escapeXml(rate)}" ` +
-    `volume="${escapeXml(volume)}">` +
+  </voice>
 
-    `${safeText}` +
-
-    `</prosody>` +
-
-    `</voice>` +
-
-    `</speak>`
-  );
+</speak>
+`.trim();
 
 }
 
@@ -496,6 +277,7 @@ function createSpeechConfig(
 ) {
 
   return (
+
     `X-Timestamp:${edgeTimestamp()}\r\n` +
 
     `Content-Type:application/json; charset=utf-8\r\n` +
@@ -503,22 +285,33 @@ function createSpeechConfig(
     `Path:speech.config\r\n\r\n` +
 
     JSON.stringify({
+
       context: {
+
         synthesis: {
+
           audio: {
+
             metadataoptions: {
+
               sentenceBoundaryEnabled:
-                "false",
+                false,
 
               wordBoundaryEnabled:
-                "false"
+                true
+
             },
 
             outputFormat
+
           }
+
         }
+
       }
+
     })
+
   );
 
 }
@@ -534,7 +327,7 @@ function createSSMLMessage(
   pitch,
   rate,
   volume,
-  requestId
+  id
 ) {
 
   const ssml =
@@ -548,7 +341,8 @@ function createSSMLMessage(
 
 
   return (
-    `X-RequestId:${requestId}\r\n` +
+
+    `X-RequestId:${id}\r\n` +
 
     `Content-Type:application/ssml+xml\r\n` +
 
@@ -557,7 +351,59 @@ function createSSMLMessage(
     `Path:ssml\r\n\r\n` +
 
     ssml
+
   );
+
+}
+
+
+/* =========================================================
+   CREATE EDGE URL
+========================================================= */
+
+async function createEdgeUrl() {
+
+  const secMsGec =
+    await generateSecMsGec();
+
+
+  const connectionId =
+    requestId();
+
+
+  /*
+   * IMPORTANT
+   *
+   * HTTPS ONLY.
+   *
+   * Do NOT use wss:// here.
+   */
+
+  const url =
+    `${EDGE_TTS_URL}` +
+
+    `?TrustedClientToken=${encodeURIComponent(
+      TRUSTED_CLIENT_TOKEN
+    )}` +
+
+    `&Sec-MS-GEC=${encodeURIComponent(
+      secMsGec
+    )}` +
+
+    `&Sec-MS-GEC-Version=1-${encodeURIComponent(
+      CHROMIUM_FULL_VERSION
+    )}` +
+
+    `&ConnectionId=${connectionId}`;
+
+
+  return {
+
+    url,
+
+    connectionId
+
+  };
 
 }
 
@@ -573,14 +419,25 @@ function extractAudio(
   let bytes;
 
 
+  /*
+   * ArrayBuffer
+   */
+
   if (
     data instanceof ArrayBuffer
   ) {
 
     bytes =
-      new Uint8Array(data);
+      new Uint8Array(
+        data
+      );
 
   }
+
+
+  /*
+   * Uint8Array
+   */
 
   else if (
     data instanceof Uint8Array
@@ -591,18 +448,10 @@ function extractAudio(
 
   }
 
-  else if (
-    ArrayBuffer.isView(data)
-  ) {
 
-    bytes =
-      new Uint8Array(
-        data.buffer,
-        data.byteOffset,
-        data.byteLength
-      );
-
-  }
+  /*
+   * Blob
+   */
 
   else {
 
@@ -614,19 +463,21 @@ function extractAudio(
   if (
     bytes.length < 2
   ) {
+
     return null;
+
   }
 
 
   /*
-   * Edge TTS binary packet:
+   * Edge TTS binary frame:
    *
    * 2 bytes:
    * header length
    *
    * headers
    *
-   * audio data
+   * audio
    */
 
   const headerLength =
@@ -637,23 +488,31 @@ function extractAudio(
 
 
   const audioStart =
-    2 + headerLength;
+    2 +
+    headerLength;
 
 
   if (
-    audioStart > bytes.length
+    audioStart >
+    bytes.length
   ) {
+
     return null;
+
   }
+
+
+  const headerBytes =
+    bytes.slice(
+      2,
+      audioStart
+    );
 
 
   const headers =
     new TextDecoder()
       .decode(
-        bytes.slice(
-          2,
-          audioStart
-        )
+        headerBytes
       );
 
 
@@ -670,129 +529,22 @@ function extractAudio(
   }
 
 
-  return bytes.slice(
-    audioStart
-  );
-
-}
-
-
-/* =========================================================
-   BUILD EDGE WS URL
-========================================================= */
-
-async function createEdgeWebSocketUrl() {
-
-  const secMsGec =
-    await generateSecMsGec();
-
-
-  const connectionId =
-    randomId();
-
-
-  const url =
-    `${EDGE_WSS_URL}` +
-
-    `?TrustedClientToken=` +
-    encodeURIComponent(
-      TRUSTED_CLIENT_TOKEN
-    ) +
-
-    `&Sec-MS-GEC=` +
-    encodeURIComponent(
-      secMsGec
-    ) +
-
-    `&Sec-MS-GEC-Version=` +
-    encodeURIComponent(
-      SEC_MS_GEC_VERSION
-    ) +
-
-    `&ConnectionId=` +
-    encodeURIComponent(
-      connectionId
-    );
-
-
-  return {
-    url,
-    connectionId
-  };
-
-}
-
-
-/* =========================================================
-   CONNECT OUTBOUND WEBSOCKET
-========================================================= */
-
-async function connectEdgeWebSocket(
-  url
-) {
-
-  /*
-   * Cloudflare Workers supports:
-   *
-   * fetch(url, {
-   *   headers: {
-   *     Upgrade: "websocket"
-   *   }
-   * })
-   *
-   * The runtime handles the WebSocket
-   * handshake.
-   */
-
-  const response =
-    await fetch(
-      url,
-      {
-        headers: {
-          ...WSS_HEADERS,
-
-          "Upgrade":
-            "websocket"
-        }
-      }
+  const audio =
+    bytes.slice(
+      audioStart
     );
 
 
   if (
-    !response.webSocket
+    !audio.length
   ) {
 
-    let body = "";
-
-    try {
-      body =
-        await response.text();
-    }
-    catch {}
-
-
-    throw new Error(
-      `Edge TTS handshake failed: ` +
-      `${response.status} ` +
-      `${response.statusText || ""}` +
-      `${
-        body
-          ? ` - ${body.slice(0, 500)}`
-          : ""
-      }`
-    );
+    return null;
 
   }
 
 
-  const ws =
-    response.webSocket;
-
-
-  ws.accept();
-
-
-  return ws;
+  return audio;
 
 }
 
@@ -808,29 +560,7 @@ export async function edgeTTS(
   const text =
     String(
       payload.text || ""
-    ).trim();
-
-
-  if (!text) {
-
-    return new Response(
-      JSON.stringify({
-        message:
-          "Text is required"
-      }),
-      {
-        status: 400,
-
-        headers: {
-          "Content-Type":
-            "application/json; charset=utf-8",
-
-          ...CORS_HEADERS
-        }
-      }
     );
-
-  }
 
 
   const voice =
@@ -841,20 +571,23 @@ export async function edgeTTS(
 
 
   const pitch =
-    normalizePitch(
-      payload.pitch
+    String(
+      payload.pitch ||
+      "+0Hz"
     );
 
 
   const rate =
-    normalizeRate(
-      payload.rate
+    String(
+      payload.rate ||
+      "0%"
     );
 
 
   const volume =
-    normalizeVolume(
-      payload.volume
+    String(
+      payload.volume ||
+      "100%"
     );
 
 
@@ -865,8 +598,73 @@ export async function edgeTTS(
     ).toLowerCase();
 
 
+  /* =======================================================
+     VALIDATE TEXT
+  ======================================================= */
+
+  if (
+    !text.trim()
+  ) {
+
+    return new Response(
+
+      JSON.stringify({
+
+        message:
+          "Text is required",
+
+        example: {
+
+          text:
+            "Hello world",
+
+          voice:
+            "en-US-AriaNeural",
+
+          pitch:
+            "+0Hz",
+
+          rate:
+            "0%",
+
+          volume:
+            "100%",
+
+          format:
+            "mp3"
+
+        }
+
+      }),
+
+      {
+
+        status: 400,
+
+        headers: {
+
+          "Content-Type":
+            "application/json; charset=utf-8",
+
+          ...CORS_HEADERS
+
+        }
+
+      }
+
+    );
+
+  }
+
+
+  /* =======================================================
+     FORMAT
+  ======================================================= */
+
   let outputFormat;
+
   let contentType;
+
   let filename;
 
 
@@ -918,87 +716,232 @@ export async function edgeTTS(
   }
 
 
+  /* =======================================================
+     CREATE URL
+  ======================================================= */
+
   const {
     url,
     connectionId
   } =
-    await createEdgeWebSocketUrl();
+    await createEdgeUrl();
 
 
-  const ws =
-    await connectEdgeWebSocket(
-      url
+  /* =======================================================
+     CONNECT WEBSOCKET
+  ======================================================= */
+
+  let response;
+
+
+  try {
+
+    /*
+     * IMPORTANT:
+     *
+     * HTTPS
+     * NOT WSS
+     */
+
+    response =
+      await fetch(
+        url,
+        {
+
+          headers: {
+
+            Upgrade:
+              "websocket"
+
+          }
+
+        }
+      );
+
+  }
+
+  catch (error) {
+
+    throw new Error(
+      `Edge WebSocket fetch failed: ${
+        error?.message ||
+        "unknown error"
+      }`
     );
 
+  }
 
-  const audioChunks = [];
+
+  /* =======================================================
+     GET WEBSOCKET
+  ======================================================= */
+
+  const ws =
+    response?.webSocket;
+
+
+  if (!ws) {
+
+    let body = "";
+
+    try {
+
+      body =
+        await response.text();
+
+    }
+
+    catch {}
+
+
+    throw new Error(
+
+      `Edge WebSocket handshake failed: ` +
+
+      `${response.status} ` +
+
+      `${response.statusText || ""} ` +
+
+      `${body.slice(0, 500)}`
+
+    );
+
+  }
+
+
+  /*
+   * Binary messages should arrive
+   * as ArrayBuffer.
+   */
+
+  ws.binaryType =
+    "arraybuffer";
+
+
+  /*
+   * Accept outbound WebSocket.
+   */
+
+  ws.accept();
+
+
+  /* =======================================================
+     AUDIO
+  ======================================================= */
+
+  const audioChunks =
+    [];
+
 
   let audioReceived =
     false;
+
 
   let finished =
     false;
 
 
+  /* =======================================================
+     RETURN PROMISE
+  ======================================================= */
+
   return await new Promise(
-    (resolve, reject) => {
+    (
+      resolve,
+      reject
+    ) => {
+
 
       let timeout;
 
 
-      function cleanup() {
-
-        if (timeout) {
-          clearTimeout(timeout);
-        }
-
-
-        try {
-          ws.close();
-        }
-        catch {}
-
-      }
-
+      /* ===================================================
+         FINISH
+      =================================================== */
 
       function finish(
         error = null
       ) {
 
-        if (finished) {
+        if (
+          finished
+        ) {
+
           return;
+
         }
 
 
-        finished = true;
+        finished =
+          true;
 
 
-        cleanup();
+        if (
+          timeout
+        ) {
 
-
-        if (error) {
-
-          reject(error);
-
-          return;
+          clearTimeout(
+            timeout
+          );
 
         }
 
 
         if (
-          !audioChunks.length
+          error
         ) {
 
+          try {
+
+            ws.close();
+
+          }
+
+          catch {}
+
+
           reject(
-            new Error(
-              "Edge TTS returned no audio"
-            )
+            error
           );
 
           return;
 
         }
 
+
+        /*
+         * No audio
+         */
+
+        if (
+          !audioChunks.length
+        ) {
+
+          try {
+
+            ws.close();
+
+          }
+
+          catch {}
+
+
+          reject(
+
+            new Error(
+              "Edge TTS returned no audio"
+            )
+
+          );
+
+          return;
+
+        }
+
+
+        /*
+         * Calculate total size
+         */
 
         let total =
           0;
@@ -1014,6 +957,10 @@ export async function edgeTTS(
 
         }
 
+
+        /*
+         * Combine chunks
+         */
 
         const output =
           new Uint8Array(
@@ -1042,10 +989,21 @@ export async function edgeTTS(
         }
 
 
+        try {
+
+          ws.close();
+
+        }
+
+        catch {}
+
+
         resolve(
+
           new Response(
             output,
             {
+
               status: 200,
 
               headers: {
@@ -1062,22 +1020,32 @@ export async function edgeTTS(
                   ),
 
                 ...CORS_HEADERS
+
               }
+
             }
+
           )
+
         );
 
       }
 
+
+      /* ===================================================
+         TIMEOUT
+      =================================================== */
 
       timeout =
         setTimeout(
           () => {
 
             finish(
+
               new Error(
                 "Edge TTS timeout"
               )
+
             );
 
           },
@@ -1096,36 +1064,49 @@ export async function edgeTTS(
           try {
 
             /*
-             * 1. speech.config
+             * speech.config
              */
 
             ws.send(
+
               createSpeechConfig(
                 outputFormat
               )
+
             );
 
 
             /*
-             * 2. SSML
+             * SSML
              */
 
             ws.send(
+
               createSSMLMessage(
+
                 text,
+
                 voice,
+
                 pitch,
+
                 rate,
+
                 volume,
+
                 connectionId
+
               )
+
             );
 
           }
 
           catch (error) {
 
-            finish(error);
+            finish(
+              error
+            );
 
           }
 
@@ -1139,12 +1120,21 @@ export async function edgeTTS(
 
       ws.addEventListener(
         "message",
-        event => {
+        async event => {
+
+          if (
+            finished
+          ) {
+
+            return;
+
+          }
+
 
           try {
 
             /*
-             * Binary audio
+             * Binary
              */
 
             if (
@@ -1152,16 +1142,39 @@ export async function edgeTTS(
               "string"
             ) {
 
+              let data =
+                event.data;
+
+
+              /*
+               * Blob fallback
+               */
+
+              if (
+                typeof Blob !==
+                "undefined" &&
+                data instanceof Blob
+              ) {
+
+                data =
+                  await data.arrayBuffer();
+
+              }
+
+
               const audio =
                 extractAudio(
-                  event.data
+                  data
                 );
 
 
-              if (audio) {
+              if (
+                audio
+              ) {
 
                 audioReceived =
                   true;
+
 
                 audioChunks.push(
                   audio
@@ -1169,42 +1182,26 @@ export async function edgeTTS(
 
               }
 
+
               return;
 
             }
 
 
-            /*
-             * Text protocol message
-             */
+            /* =================================================
+               TEXT MESSAGE
+            ================================================= */
 
             const message =
-              event.data;
-
-
-            /*
-             * Error message
-             */
-
-            if (
-              /Path:error/i.test(
-                message
-              ) ||
-              /error/i.test(
-                message
-              )
-            ) {
-
-              console.error(
-                "Edge TTS message:",
-                message
+              String(
+                event.data
               );
 
-            }
-
 
             /*
-             * End of turn
+             * turn.end
+             *
+             * Only finish if audio exists.
              */
 
             if (
@@ -1220,15 +1217,6 @@ export async function edgeTTS(
                 finish();
 
               }
-              else {
-
-                finish(
-                  new Error(
-                    "Edge TTS turn ended without audio"
-                  )
-                );
-
-              }
 
               return;
 
@@ -1236,7 +1224,7 @@ export async function edgeTTS(
 
 
             /*
-             * End of session
+             * session.end
              */
 
             if (
@@ -1252,15 +1240,25 @@ export async function edgeTTS(
                 finish();
 
               }
-              else {
 
-                finish(
-                  new Error(
-                    "Edge TTS session ended without audio"
-                  )
-                );
+              return;
 
-              }
+            }
+
+
+            /*
+             * Microsoft error
+             */
+
+            if (
+              /error|forbidden|unauthorized/i
+                .test(message)
+            ) {
+
+              console.error(
+                "Edge TTS:",
+                message
+              );
 
             }
 
@@ -1268,7 +1266,9 @@ export async function edgeTTS(
 
           catch (error) {
 
-            finish(error);
+            finish(
+              error
+            );
 
           }
 
@@ -1291,9 +1291,11 @@ export async function edgeTTS(
 
 
           finish(
+
             new Error(
               "Edge TTS WebSocket error"
             )
+
           );
 
         }
@@ -1308,10 +1310,19 @@ export async function edgeTTS(
         "close",
         () => {
 
-          if (finished) {
+          if (
+            finished
+          ) {
+
             return;
+
           }
 
+
+          /*
+           * Sometimes Edge closes immediately
+           * after final audio.
+           */
 
           if (
             audioReceived
@@ -1324,9 +1335,11 @@ export async function edgeTTS(
           else {
 
             finish(
+
               new Error(
                 "Edge TTS WebSocket closed without audio"
               )
+
             );
 
           }
@@ -1341,174 +1354,71 @@ export async function edgeTTS(
 
 
 /* =========================================================
-   GET ALL EDGE VOICES
+   GET ALL VOICES
 ========================================================= */
 
 export async function getEdgeVoices() {
 
-  /*
-   * Important:
-   *
-   * voices/list also requires
-   * Sec-MS-GEC.
-   */
-
-  const secMsGec =
-    await generateSecMsGec();
-
-
   const url =
     `${VOICES_URL}` +
-
-    `?trustedclienttoken=` +
-    encodeURIComponent(
+    `?trustedclienttoken=${encodeURIComponent(
       TRUSTED_CLIENT_TOKEN
-    ) +
-
-    `&Sec-MS-GEC=` +
-    encodeURIComponent(
-      secMsGec
-    ) +
-
-    `&Sec-MS-GEC-Version=` +
-    encodeURIComponent(
-      SEC_MS_GEC_VERSION
-    );
-
-
-  const muid =
-    generateMuid();
+    )}`;
 
 
   const response =
     await fetch(
       url,
       {
-        headers: {
-          ...VOICE_HEADERS,
 
-          "Cookie":
-            `muid=${muid};`
+        headers: {
+
+          Accept:
+            "*/*",
+
+          "User-Agent":
+            `Mozilla/5.0 (Windows NT 10.0; Win64; x64) ` +
+            `AppleWebKit/537.36 (KHTML, like Gecko) ` +
+            `Chrome/${CHROMIUM_FULL_VERSION} ` +
+            `Safari/537.36 Edg/${CHROMIUM_FULL_VERSION}`
+
         }
+
       }
     );
-
-
-  /*
-   * First request failed.
-   *
-   * Usually this can be caused by
-   * clock skew / token timing.
-   *
-   * Retry once with a freshly generated token.
-   */
-
-  if (
-    response.status === 403
-  ) {
-
-    const retrySecMsGec =
-      await generateSecMsGec();
-
-
-    const retryUrl =
-      `${VOICES_URL}` +
-
-      `?trustedclienttoken=` +
-      encodeURIComponent(
-        TRUSTED_CLIENT_TOKEN
-      ) +
-
-      `&Sec-MS-GEC=` +
-      encodeURIComponent(
-        retrySecMsGec
-      ) +
-
-      `&Sec-MS-GEC-Version=` +
-      encodeURIComponent(
-        SEC_MS_GEC_VERSION
-      );
-
-
-    const retry =
-      await fetch(
-        retryUrl,
-        {
-          headers: {
-            ...VOICE_HEADERS,
-
-            "Cookie":
-              `muid=${generateMuid()};`
-          }
-        }
-      );
-
-
-    if (
-      !retry.ok
-    ) {
-
-      const body =
-        await retry.text()
-          .catch(
-            () => ""
-          );
-
-
-      throw new Error(
-        `Edge voices request failed: ` +
-        `${retry.status} ` +
-        `${
-          body
-            ? body.slice(0, 500)
-            : ""
-        }`
-      );
-
-    }
-
-
-    const data =
-      await retry.json();
-
-
-    return Array.isArray(data)
-      ? data
-      : [];
-
-  }
 
 
   if (
     !response.ok
   ) {
 
-    const body =
-      await response.text()
+    const text =
+      await response
+        .text()
         .catch(
           () => ""
         );
 
 
     throw new Error(
+
       `Edge voices request failed: ` +
+
       `${response.status} ` +
-      `${
-        body
-          ? body.slice(0, 500)
-          : ""
-      }`
+
+      `${text.slice(0, 500)}`
+
     );
 
   }
 
 
-  const data =
+  const voices =
     await response.json();
 
 
   if (
-    !Array.isArray(data)
+    !Array.isArray(voices)
   ) {
 
     throw new Error(
@@ -1518,7 +1428,7 @@ export async function getEdgeVoices() {
   }
 
 
-  return data;
+  return voices;
 
 }
 
@@ -1531,17 +1441,17 @@ function localeToLabel(
   locale
 ) {
 
-  if (
-    !locale ||
-    !locale.includes("-")
-  ) {
-
-    return locale;
-
-  }
-
-
   try {
+
+    if (
+      !locale ||
+      !locale.includes("-")
+    ) {
+
+      return locale;
+
+    }
+
 
     const parts =
       locale.split("-");
@@ -1607,7 +1517,7 @@ function localeToLabel(
 
 
 /* =========================================================
-   ALL GROUPS
+   GROUPS
 ========================================================= */
 
 export async function edgeTTSGroups() {
@@ -1642,8 +1552,11 @@ export async function edgeTTSGroups() {
     ) {
 
       map.set(
+
         voice.Locale,
+
         {
+
           value:
             voice.Locale,
 
@@ -1651,7 +1564,9 @@ export async function edgeTTSGroups() {
             localeToLabel(
               voice.Locale
             )
+
         }
+
       );
 
     }
@@ -1673,10 +1588,12 @@ export async function edgeTTSGroups() {
 
 
   return {
+
     totalLocales:
       options.length,
 
     options
+
   };
 
 }
@@ -1705,72 +1622,48 @@ export async function edgeTTSVoicesByGroup(
     allVoices.filter(
       voice =>
         voice &&
-        voice.Locale === group
+        voice.Locale ===
+          group
     );
 
 
   const options =
     voices.map(
-      voice => {
+      voice => ({
 
-        const shortName =
+        value:
           voice.ShortName ||
-          voice.Name ||
-          "";
+          voice.Name,
 
+        label:
+          `${voice.Gender || ""} - ${
+            voice.DisplayName ||
+            voice.LocalName ||
+            voice.Name ||
+            ""
+          }`.trim(),
 
-        const displayName =
-          voice.DisplayName ||
+        gender:
+          voice.Gender ||
+          "",
+
+        shortName:
+          voice.ShortName ||
+          "",
+
+        locale:
+          voice.Locale ||
+          "",
+
+        localName:
           voice.LocalName ||
-          voice.FriendlyName ||
-          shortName;
+          "",
 
+        displayName:
+          voice.DisplayName ||
+          ""
 
-        return {
-
-          value:
-            shortName,
-
-          label:
-            `${voice.Gender || ""} - ${displayName}`
-              .replace(
-                /^\s*-\s*/,
-                ""
-              )
-              .trim(),
-
-          voice: {
-            Name:
-              voice.Name ||
-              shortName,
-
-            ShortName:
-              shortName,
-
-            DisplayName:
-              voice.DisplayName ||
-              null,
-
-            LocalName:
-              voice.LocalName ||
-              null,
-
-            Gender:
-              voice.Gender ||
-              null,
-
-            Locale:
-              voice.Locale ||
-              group,
-
-            VoiceType:
-              voice.VoiceType ||
-              null
-          }
-
-        };
-
-      }
+      })
     );
 
 
@@ -1782,28 +1675,6 @@ export async function edgeTTSVoicesByGroup(
       options.length,
 
     options
-
-  };
-
-}
-
-
-/* =========================================================
-   EXPORT ALL VOICES
-========================================================= */
-
-export async function edgeTTSAllVoices() {
-
-  const voices =
-    await getEdgeVoices();
-
-
-  return {
-
-    total:
-      voices.length,
-
-    voices
 
   };
 

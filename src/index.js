@@ -1,25 +1,30 @@
 import googleTTS
   from "../worker.google-tts.js";
 
+
 import {
   edgeTTS,
   edgeTTSGroups,
-  edgeTTSVoicesByGroup,
-  edgeTTSAllVoices
-} from "../worker.edge-tts.js";
+  edgeTTSVoicesByGroup
+}
+from "../worker.edge-tts.js";
+
 
 import {
   generateTikTokTTS
-} from "../worker.tiktok-tts.js";
+}
+from "../worker.tiktok-tts.js";
 
 
 /* =========================================================
-   ALLOWED ORIGINS
+   CORS
 ========================================================= */
 
 const ALLOWED_ORIGINS =
   new Set([
+
     "http://localhost:3000",
+
     "http://localhost:5173",
 
     "https://ai-video-generator-web.netlify.app",
@@ -27,11 +32,12 @@ const ALLOWED_ORIGINS =
     "https://www.unminifydev.com",
 
     "https://www.freettspro.com"
+
   ]);
 
 
 /* =========================================================
-   CORS
+   CORS HEADERS
 ========================================================= */
 
 function corsHeaders(
@@ -48,7 +54,9 @@ function corsHeaders(
    * No Origin
    */
 
-  if (!origin) {
+  if (
+    !origin
+  ) {
 
     return {
 
@@ -70,7 +78,7 @@ function corsHeaders(
 
 
   /*
-   * Allowed Origin
+   * Allowed origin
    */
 
   if (
@@ -101,6 +109,10 @@ function corsHeaders(
   }
 
 
+  /*
+   * Unknown origin
+   */
+
   return {};
 
 }
@@ -122,8 +134,13 @@ function addCors(
 
 
   for (
-    const [key, value]
-    of Object.entries(headers)
+    const [
+      key,
+      value
+    ]
+    of Object.entries(
+      headers
+    )
   ) {
 
     response.headers.set(
@@ -183,19 +200,22 @@ async function getPayload(
 
 
   /*
-   * Form
+   * FormData
    */
 
   let form = {};
 
 
   if (
+
     contentType.includes(
       "multipart/form-data"
     ) ||
+
     contentType.includes(
       "application/x-www-form-urlencoded"
     )
+
   ) {
 
     try {
@@ -258,7 +278,7 @@ async function getPayload(
 
 
 /* =========================================================
-   WRAPPER DETECTION
+   WRAPPER CHECK
 ========================================================= */
 
 function isWrapperResponse(
@@ -266,63 +286,51 @@ function isWrapperResponse(
 ) {
 
   return (
+
     result &&
-    typeof result === "object" &&
+
+    typeof result ===
+      "object" &&
+
     typeof result.statusCode ===
       "number" &&
+
     "headers" in result &&
+
     "body" in result
+
   );
 
 }
 
 
 /* =========================================================
-   JSON WRAPPER
+   JSON RESPONSE
 ========================================================= */
 
-function returnWrapper(
-  result,
+function returnJSON(
+  data,
+  status,
   request
 ) {
 
-  const body =
-    result &&
-    typeof result.body ===
-      "string"
-      ? result.body
-      : JSON.stringify(
-          result?.body ??
-          {}
-        );
-
-
-  const output = {
-
-    statusCode:
-      result?.statusCode ??
-      200,
-
-    headers:
-      result?.headers ??
-      {},
-
-    body
-
-  };
-
-
   return new Response(
+
     JSON.stringify(
-      output
+      data
     ),
+
     {
-      status: 200,
+
+      status,
 
       headers: {
 
         "Content-Type":
           "application/json; charset=utf-8",
+
+        "Cache-Control":
+          "no-store",
 
         ...corsHeaders(
           request
@@ -331,6 +339,33 @@ function returnWrapper(
       }
 
     }
+
+  );
+
+}
+
+
+/* =========================================================
+   RETURN WRAPPER
+========================================================= */
+
+function returnWrapper(
+  result,
+  request
+) {
+
+  /*
+   * Preserve existing wrapper.
+   */
+
+  return returnJSON(
+
+    result,
+
+    200,
+
+    request
+
   );
 
 }
@@ -345,6 +380,36 @@ function returnAudio(
   request
 ) {
 
+  const body =
+    result.body;
+
+
+  if (
+    body === undefined ||
+    body === null
+  ) {
+
+    return returnJSON(
+
+      {
+
+        statusCode:
+          500,
+
+        message:
+          "Empty audio response"
+
+      },
+
+      500,
+
+      request
+
+    );
+
+  }
+
+
   const headers =
     new Headers(
       result.headers || {}
@@ -358,7 +423,10 @@ function returnAudio(
 
 
   for (
-    const [key, value]
+    const [
+      key,
+      value
+    ]
     of Object.entries(
       cors
     )
@@ -373,21 +441,26 @@ function returnAudio(
 
 
   return new Response(
-    result.body,
+
+    body,
+
     {
+
       status:
         result.statusCode ||
         200,
 
       headers
+
     }
+
   );
 
 }
 
 
 /* =========================================================
-   JSON ERROR
+   ERROR
 ========================================================= */
 
 function jsonError(
@@ -397,61 +470,38 @@ function jsonError(
   extra = {}
 ) {
 
-  const payload = {
+  return returnJSON(
 
-    statusCode:
-      status,
-
-    headers: {
-
-      "content-type":
-        "application/json; charset=utf-8",
-
-      "Cache-Control":
-        "no-store",
-
-      "Access-Control-Allow-Origin":
-        "*",
-
-      "Access-Control-Allow-Headers":
-        "*",
-
-      "Access-Control-Allow-Methods":
-        "*"
-
-    },
-
-    body:
-      JSON.stringify({
-
-        message,
-
-        ...extra
-
-      })
-
-  };
-
-
-  return new Response(
-    JSON.stringify(
-      payload
-    ),
     {
-      status,
+
+      statusCode:
+        status,
 
       headers: {
 
-        "Content-Type":
+        "content-type":
           "application/json; charset=utf-8",
 
-        ...corsHeaders(
-          request
-        )
+        "Cache-Control":
+          "no-store"
 
-      }
+      },
 
-    }
+      body:
+        JSON.stringify({
+
+          message,
+
+          ...extra
+
+        })
+
+    },
+
+    status,
+
+    request
+
   );
 
 }
@@ -469,9 +519,9 @@ export default {
     ctx
   ) {
 
-    /*
-     * OPTIONS
-     */
+    /* =====================================================
+       OPTIONS
+    ===================================================== */
 
     if (
       request.method ===
@@ -479,9 +529,13 @@ export default {
     ) {
 
       return new Response(
+
         null,
+
         {
-          status: 204,
+
+          status:
+            204,
 
           headers:
             corsHeaders(
@@ -489,15 +543,20 @@ export default {
             )
 
         }
+
       );
 
     }
 
 
+    /* =====================================================
+       MAIN
+    ===================================================== */
+
     try {
 
       /*
-       * Parse
+       * Parse request
        */
 
       const payload =
@@ -506,30 +565,30 @@ export default {
         );
 
 
-      /*
-       * Engine
-       */
+      /* ===================================================
+         ENGINE
+      =================================================== */
 
       const engine =
         String(
+
           payload.engine ||
           "google"
+
         ).toLowerCase();
 
-
-      /*
-       * Action
-       */
 
       const action =
         String(
+
           payload.action ||
           "tts"
+
         ).toLowerCase();
 
 
       /*
-       * Remove routing fields
+       * Routing params
        */
 
       delete payload.engine;
@@ -545,7 +604,8 @@ export default {
         engine === "edge"
       ) {
 
-        /* ================================================
+
+        /* =================================================
            GROUPS
         ================================================= */
 
@@ -562,6 +622,7 @@ export default {
 
           return returnWrapper(
             {
+
               statusCode:
                 200,
 
@@ -581,13 +642,15 @@ export default {
                 )
 
             },
+
             request
+
           );
 
         }
 
 
-        /* ================================================
+        /* =================================================
            VOICES BY GROUP
         ================================================= */
 
@@ -604,6 +667,7 @@ export default {
 
           return returnWrapper(
             {
+
               statusCode:
                 200,
 
@@ -623,53 +687,15 @@ export default {
                 )
 
             },
+
             request
+
           );
 
         }
 
 
-        /* ================================================
-           ALL VOICES
-        ================================================= */
-
-        if (
-          action ===
-          "voices"
-        ) {
-
-          const result =
-            await edgeTTSAllVoices();
-
-
-          return returnWrapper(
-            {
-              statusCode:
-                200,
-
-              headers: {
-
-                "content-type":
-                  "application/json; charset=utf-8",
-
-                "Cache-Control":
-                  "no-store"
-
-              },
-
-              body:
-                JSON.stringify(
-                  result
-                )
-
-            },
-            request
-          );
-
-        }
-
-
-        /* ================================================
+        /* =================================================
            EDGE SYNTHESIS
         ================================================= */
 
@@ -680,7 +706,7 @@ export default {
 
 
         /*
-         * Direct Response
+         * edgeTTS returns Response
          */
 
         if (
@@ -748,24 +774,9 @@ export default {
          * Fallback
          */
 
-        return returnWrapper(
-          {
-            statusCode:
-              200,
-
-            headers: {
-
-              "content-type":
-                "application/json; charset=utf-8"
-
-            },
-
-            body:
-              JSON.stringify(
-                result || {}
-              )
-
-          },
+        return returnJSON(
+          result || {},
+          200,
           request
         );
 
@@ -791,7 +802,9 @@ export default {
 
           const response =
             new Response(
+
               audioBuffer,
+
               {
 
                 status:
@@ -811,6 +824,7 @@ export default {
                 }
 
               }
+
             );
 
 
@@ -824,12 +838,14 @@ export default {
         catch (error) {
 
           return jsonError(
+
             error?.message ||
               "TikTok TTS error",
 
             500,
 
             request
+
           );
 
         }
@@ -855,7 +871,7 @@ export default {
 
 
           /*
-           * Direct Response
+           * Response
            */
 
           if (
@@ -939,7 +955,9 @@ export default {
 
             const response =
               new Response(
+
                 result,
+
                 {
 
                   status:
@@ -956,6 +974,7 @@ export default {
                   }
 
                 }
+
               );
 
 
@@ -971,24 +990,9 @@ export default {
            * JSON
            */
 
-          return returnWrapper(
-            {
-              statusCode:
-                200,
-
-              headers: {
-
-                "content-type":
-                  "application/json; charset=utf-8"
-
-              },
-
-              body:
-                JSON.stringify(
-                  result || {}
-                )
-
-            },
+          return returnJSON(
+            result || {},
+            200,
             request
           );
 
@@ -997,12 +1001,14 @@ export default {
         catch (error) {
 
           return jsonError(
+
             error?.message ||
               "Google TTS error",
 
             500,
 
             request
+
           );
 
         }
@@ -1015,6 +1021,7 @@ export default {
       =================================================== */
 
       return jsonError(
+
         `Unknown TTS engine: ${engine}`,
 
         400,
@@ -1034,6 +1041,7 @@ export default {
           ]
 
         }
+
       );
 
     }
@@ -1047,12 +1055,14 @@ export default {
 
 
       return jsonError(
+
         error?.message ||
           "TTS error",
 
         500,
 
         request
+
       );
 
     }
