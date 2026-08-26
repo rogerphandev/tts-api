@@ -9,9 +9,9 @@ import {
 import { generateTikTokTTS } from "../tiktok-tts.js";
 
 
-/* ==================================================
-   CORS CONFIG
-================================================== */
+/* =========================================================
+   CORS
+========================================================= */
 
 const ALLOWED_ORIGINS = new Set([
   "http://localhost:3000",
@@ -22,99 +22,172 @@ const ALLOWED_ORIGINS = new Set([
 ]);
 
 
-function corsHeaders(req) {
-  const origin = req.headers.get("origin");
+function corsHeaders(request) {
+
+  const origin =
+    request.headers.get("Origin");
+
 
   /*
-   * Request không có Origin:
-   * server-to-server / curl
+   * Request không có Origin
    */
-  if (!origin || ALLOWED_ORIGINS.has(origin)) {
+
+  if (!origin) {
+
     return {
-      "Access-Control-Allow-Origin":
-        origin || "*",
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Headers": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Max-Age": "86400"
+    };
 
-      "Access-Control-Allow-Methods":
-        "GET, POST, OPTIONS",
+  }
 
+
+  /*
+   * Origin được phép
+   */
+
+  if (ALLOWED_ORIGINS.has(origin)) {
+
+    return {
+      "Access-Control-Allow-Origin": origin,
       "Access-Control-Allow-Headers":
         "Content-Type, Authorization",
-
-      "Access-Control-Max-Age":
-        "86400"
+      "Access-Control-Allow-Methods":
+        "GET, POST, OPTIONS",
+      "Access-Control-Allow-Credentials": "true",
+      "Access-Control-Max-Age": "86400"
     };
+
   }
+
 
   /*
    * Origin không được phép
    */
+
   return {};
+
 }
 
 
-/* ==================================================
+/* =========================================================
    ADD CORS
-================================================== */
+========================================================= */
 
-function addCors(response, req) {
+function addCors(response, request) {
+
   const headers =
-    corsHeaders(req);
+    corsHeaders(request);
 
-  Object.entries(headers).forEach(
-    ([key, value]) => {
-      response.headers.set(
-        key,
-        value
-      );
-    }
-  );
+
+  for (
+    const [key, value]
+    of Object.entries(headers)
+  ) {
+
+    response.headers.set(
+      key,
+      value
+    );
+
+  }
+
 
   return response;
+
 }
 
 
-/* ==================================================
-   PARSE REQUEST PAYLOAD
-================================================== */
+/* =========================================================
+   PARSE REQUEST
+========================================================= */
 
-async function getPayload(req) {
+async function getPayload(request) {
+
   let body = {};
+
 
   /*
    * JSON body
    */
+
   try {
-    body = await req.json();
+
+    const contentType =
+      request.headers.get(
+        "content-type"
+      ) || "";
+
 
     if (
-      !body ||
-      typeof body !== "object"
+      contentType.includes(
+        "application/json"
+      )
     ) {
-      body = {};
+
+      body =
+        await request.json();
+
     }
+
   } catch {
+
     body = {};
+
   }
 
 
   /*
    * FormData
    */
-  let formData = null;
+
+  let form = {};
+
 
   try {
-    formData =
-      await req.formData();
+
+    const contentType =
+      request.headers.get(
+        "content-type"
+      ) || "";
+
+
+    if (
+      contentType.includes(
+        "multipart/form-data"
+      ) ||
+      contentType.includes(
+        "application/x-www-form-urlencoded"
+      )
+    ) {
+
+      const formData =
+        await request.formData();
+
+
+      form =
+        Object.fromEntries(
+          formData.entries()
+        );
+
+    }
+
   } catch {
-    formData = null;
+
+    form = {};
+
   }
 
 
   /*
-   * Query parameters
+   * Query string
    */
+
   const url =
-    new URL(req.url);
+    new URL(request.url);
+
 
   const query =
     Object.fromEntries(
@@ -123,132 +196,225 @@ async function getPayload(req) {
 
 
   /*
-   * Form parameters
-   */
-  const form =
-    formData
-      ? Object.fromEntries(
-          formData.entries()
-        )
-      : {};
-
-
-  /*
    * Priority:
-
-     body
-       ↓
-     form
-       ↓
-     query
-
-   * Query sẽ override body.
+   *
+   * body
+   * form
+   * query
+   *
+   * Query override body
    */
+
   return {
     ...body,
     ...form,
     ...query
   };
+
 }
 
 
-/* ==================================================
-   CONVERT LEGACY RESPONSE
-================================================== */
+/* =========================================================
+   NORMALIZE WRAPPER RESPONSE
+========================================================= */
 
-function legacyResponseToResponse(
-  result,
-  req
-) {
-  /*
-   * Nếu function đã trả Response
-   */
-  if (
-    result instanceof Response
-  ) {
-    return addCors(
-      result,
-      req
-    );
-  }
+function isWrapperResponse(result) {
 
-
-  /*
-   * Nếu function trả:
-
-     {
-       statusCode,
-       headers,
-       body
-     }
-   */
-
-  if (
+  return (
     result &&
     typeof result === "object" &&
-    (
-      "statusCode" in result ||
-      "headers" in result ||
-      "body" in result
-    )
-  ) {
-    const status =
-      result.statusCode || 200;
+    typeof result.statusCode === "number" &&
+    "headers" in result &&
+    "body" in result
+  );
 
-    const responseHeaders = {
-      ...(result.headers || {}),
-      ...corsHeaders(req)
-    };
+}
 
-    return new Response(
-      result.body ?? "",
-      {
-        status,
-        headers:
-          responseHeaders
-      }
-    );
-  }
 
+/* =========================================================
+   RETURN JSON WRAPPER
+========================================================= */
+
+function returnWrapper(
+  result,
+  request
+) {
 
   /*
-   * Object bình thường
+   * Đây là format mà frontend
+   * của bạn đang cần:
+   *
+   * {
+   *   statusCode: 200,
+   *   headers: {...},
+   *   body: "..."
+   * }
    */
-  if (
-    result &&
-    typeof result === "object"
-  ) {
-    return new Response(
+
+  const response =
+    new Response(
       JSON.stringify(result),
       {
         status: 200,
         headers: {
           "Content-Type":
             "application/json; charset=utf-8",
-          ...corsHeaders(req)
+          ...corsHeaders(request)
         }
       }
     );
+
+
+  return response;
+
+}
+
+
+/* =========================================================
+   RETURN AUDIO
+========================================================= */
+
+function returnAudio(
+  result,
+  request
+) {
+
+  /*
+   * result.body có thể là:
+   *
+   * Uint8Array
+   * ArrayBuffer
+   * Blob
+   */
+
+  let body =
+    result.body;
+
+
+  /*
+   * Không có body
+   */
+
+  if (
+    body === undefined ||
+    body === null
+  ) {
+
+    return returnWrapper(
+      {
+        statusCode:
+          result.statusCode || 500,
+
+        headers:
+          result.headers || {},
+
+        body:
+          JSON.stringify({
+            message:
+              "Empty audio response"
+          })
+      },
+      request
+    );
+
   }
 
 
   /*
-   * String / Buffer / Uint8Array
+   * Headers từ worker.edge-tts.js
    */
-  return new Response(
-    result,
-    {
-      status: 200,
-      headers:
-        corsHeaders(req)
+
+  const headers =
+    new Headers(
+      result.headers || {}
+    );
+
+
+  /*
+   * CORS
+   */
+
+  const cors =
+    corsHeaders(request);
+
+
+  Object.entries(cors).forEach(
+    ([key, value]) => {
+
+      headers.set(
+        key,
+        value
+      );
+
     }
   );
+
+
+  /*
+   * Return binary
+   */
+
+  return new Response(
+    body,
+    {
+      status:
+        result.statusCode || 200,
+
+      headers
+    }
+  );
+
 }
 
 
-/* ==================================================
+/* =========================================================
+   JSON ERROR
+========================================================= */
+
+function jsonError(
+  message,
+  status,
+  request,
+  extra = {}
+) {
+
+  return new Response(
+    JSON.stringify({
+      statusCode: status,
+      headers: {
+        "content-type":
+          "application/json; charset=utf-8",
+        "Cache-Control":
+          "no-store",
+        "Access-Control-Allow-Origin":
+          "*",
+        "Access-Control-Allow-Headers":
+          "*",
+        "Access-Control-Allow-Methods":
+          "*"
+      },
+      body:
+        JSON.stringify({
+          message,
+          ...extra
+        })
+    }),
+    {
+      status,
+      headers: {
+        "Content-Type":
+          "application/json; charset=utf-8",
+        ...corsHeaders(request)
+      }
+    }
+  );
+
+}
+
+
+/* =========================================================
    CLOUDFLARE WORKER
-================================================== */
+========================================================= */
 
 export default {
 
@@ -258,14 +424,15 @@ export default {
     ctx
   ) {
 
-    /* ==================================================
-       OPTIONS / PREFLIGHT
-    ================================================== */
+    /* =====================================================
+       OPTIONS
+    ===================================================== */
 
     if (
       request.method ===
       "OPTIONS"
     ) {
+
       return new Response(
         null,
         {
@@ -274,56 +441,64 @@ export default {
             corsHeaders(request)
         }
       );
+
     }
 
 
-    /* ==================================================
+    /* =====================================================
        MAIN
-    ================================================== */
+    ===================================================== */
 
     try {
 
       /*
        * Parse request
        */
+
       const payload =
         await getPayload(
           request
         );
 
 
-      /* ==================================================
-         ENGINE / ACTION
-      ================================================== */
+      /* ===================================================
+         ENGINE
+      =================================================== */
 
       const engine =
-        payload.engine ||
-        "google";
+        String(
+          payload.engine ||
+          "google"
+        ).toLowerCase();
+
 
       const action =
-        payload.action ||
-        "tts";
+        String(
+          payload.action ||
+          "tts"
+        ).toLowerCase();
 
 
       /*
-       * Không truyền engine/action
-       * xuống TTS engine.
+       * Remove routing params
        */
+
       delete payload.engine;
       delete payload.action;
 
 
-      /* ==================================================
+      /* ===================================================
          EDGE TTS
-      ================================================== */
+      =================================================== */
 
       if (
         engine === "edge"
       ) {
 
-        /* ----------------------------------------------
+
+        /* ================================================
            GROUPS
-        ---------------------------------------------- */
+        ================================================= */
 
         if (
           action === "groups"
@@ -336,52 +511,65 @@ export default {
 
 
           /*
-           * QUAN TRỌNG:
-
-           * edgeTTSGroups() trả:
-
-             {
-               statusCode: 200,
-               headers: {...},
-               body: "..."
-             }
-
-           * API bên ngoài sẽ trả:
-
-             {
-               statusCode: 200,
-               headers: {...},
-               body: "..."
-             }
-
-           * Vì vậy KHÔNG dùng:
-             Response.json(result)
-
-           * mà dùng:
-             JSON.stringify(result)
+           * worker.edge-tts.js
+           * trả:
+           *
+           * {
+           *   statusCode,
+           *   headers,
+           *   body
+           * }
            */
 
-          return new Response(
-            JSON.stringify(result),
+          if (
+            isWrapperResponse(
+              result
+            )
+          ) {
+
+            return returnWrapper(
+              result,
+              request
+            );
+
+          }
+
+
+          /*
+           * Fallback
+           */
+
+          return returnWrapper(
             {
-              status: 200,
+              statusCode: 200,
 
               headers: {
-                "Content-Type":
+                "content-type":
                   "application/json; charset=utf-8",
+                "Cache-Control":
+                  "no-store",
+                "Access-Control-Allow-Origin":
+                  "*",
+                "Access-Control-Allow-Headers":
+                  "*",
+                "Access-Control-Allow-Methods":
+                  "*"
+              },
 
-                ...corsHeaders(
-                  request
+              body:
+                JSON.stringify(
+                  result || {}
                 )
-              }
-            }
+            },
+            request
           );
+
         }
 
 
-        /* ----------------------------------------------
+        /* ================================================
            VOICES BY GROUP
-        ---------------------------------------------- */
+        ================================================= */
 
         if (
           action ===
@@ -394,32 +582,51 @@ export default {
             );
 
 
-          /*
-           * Trả wrapper JSON giống
-           * groups.
-           */
+          if (
+            isWrapperResponse(
+              result
+            )
+          ) {
 
-          return new Response(
-            JSON.stringify(result),
+            return returnWrapper(
+              result,
+              request
+            );
+
+          }
+
+
+          return returnWrapper(
             {
-              status: 200,
+              statusCode: 200,
 
               headers: {
-                "Content-Type":
+                "content-type":
                   "application/json; charset=utf-8",
+                "Cache-Control":
+                  "no-store",
+                "Access-Control-Allow-Origin":
+                  "*",
+                "Access-Control-Allow-Headers":
+                  "*",
+                "Access-Control-Allow-Methods":
+                  "*"
+              },
 
-                ...corsHeaders(
-                  request
+              body:
+                JSON.stringify(
+                  result || {}
                 )
-              }
-            }
+            },
+            request
           );
+
         }
 
 
-        /* ----------------------------------------------
+        /* ================================================
            EDGE SYNTHESIS
-        ---------------------------------------------- */
+        ================================================= */
 
         const result =
           await edgeTTS(
@@ -428,19 +635,104 @@ export default {
 
 
         /*
-         * edgeTTS() trả Response audio
+         * Error / JSON wrapper
          */
 
-        return addCors(
-          result,
+        if (
+          isWrapperResponse(
+            result
+          )
+        ) {
+
+          /*
+           * Nếu body là Uint8Array
+           * thì đây là audio
+           */
+
+          if (
+            result.body instanceof
+              Uint8Array ||
+            result.body instanceof
+              ArrayBuffer ||
+            (
+              typeof Blob !==
+              "undefined" &&
+              result.body instanceof Blob
+            )
+          ) {
+
+            return returnAudio(
+              result,
+              request
+            );
+
+          }
+
+
+          /*
+           * body string = JSON/error
+           */
+
+          return returnWrapper(
+            result,
+            request
+          );
+
+        }
+
+
+        /*
+         * Fallback nếu edgeTTS
+         * trả trực tiếp Response
+         */
+
+        if (
+          result instanceof Response
+        ) {
+
+          return addCors(
+            result,
+            request
+          );
+
+        }
+
+
+        /*
+         * Fallback object
+         */
+
+        return returnWrapper(
+          {
+            statusCode: 200,
+
+            headers: {
+              "content-type":
+                "application/json; charset=utf-8",
+              "Cache-Control":
+                "no-store",
+              "Access-Control-Allow-Origin":
+                "*",
+              "Access-Control-Allow-Headers":
+                "*",
+              "Access-Control-Allow-Methods":
+                "*"
+            },
+
+            body:
+              JSON.stringify(
+                result || {}
+              )
+          },
           request
         );
+
       }
 
 
-      /* ==================================================
+      /* ===================================================
          TIKTOK TTS
-      ================================================== */
+      =================================================== */
 
       if (
         engine === "tiktok"
@@ -461,6 +753,7 @@ export default {
                 status: 200,
 
                 headers: {
+
                   "Content-Type":
                     "audio/mpeg",
 
@@ -469,6 +762,7 @@ export default {
 
                   "Cache-Control":
                     "no-store"
+
                 }
               }
             );
@@ -479,91 +773,213 @@ export default {
             request
           );
 
-        } catch (err) {
-
-          const response =
-            new Response(
-              JSON.stringify({
-                message:
-                  err?.message ||
-                  "TikTok TTS error"
-              }),
-              {
-                status: 500,
-
-                headers: {
-                  "Content-Type":
-                    "application/json; charset=utf-8"
-                }
-              }
-            );
-
-
-          return addCors(
-            response,
-            request
-          );
         }
+
+        catch (error) {
+
+          return jsonError(
+            error?.message ||
+              "TikTok TTS error",
+            500,
+            request
+          );
+
+        }
+
       }
 
 
-      /* ==================================================
+      /* ===================================================
          GOOGLE TTS
-      ================================================== */
+      =================================================== */
 
-      /*
-       * Cloudflare Workers KHÔNG có:
+      if (
+        engine === "google"
+      ) {
 
-         /tmp/
-         /var/task/
-         FFmpeg binary
+        try {
 
-       * Vì vậy chỉ gọi:
-
-         googleTTS(payload)
-
-       * google-tts.js phải là Worker-compatible.
-       */
-
-      const result =
-        await googleTTS(
-          payload
-        );
+          const result =
+            await googleTTS(
+              payload
+            );
 
 
-      return legacyResponseToResponse(
-        result,
-        request
+          /*
+           * googleTTS trả Response
+           */
+
+          if (
+            result instanceof Response
+          ) {
+
+            return addCors(
+              result,
+              request
+            );
+
+          }
+
+
+          /*
+           * Nếu googleTTS trả wrapper
+           */
+
+          if (
+            isWrapperResponse(
+              result
+            )
+          ) {
+
+            /*
+             * Binary
+             */
+
+            if (
+              result.body instanceof
+                Uint8Array ||
+              result.body instanceof
+                ArrayBuffer ||
+              (
+                typeof Blob !==
+                "undefined" &&
+                result.body instanceof Blob
+              )
+            ) {
+
+              return returnAudio(
+                result,
+                request
+              );
+
+            }
+
+
+            /*
+             * JSON
+             */
+
+            return returnWrapper(
+              result,
+              request
+            );
+
+          }
+
+
+          /*
+           * Raw binary
+           */
+
+          if (
+            result instanceof
+              Uint8Array ||
+            result instanceof
+              ArrayBuffer ||
+            (
+              typeof Blob !==
+              "undefined" &&
+              result instanceof Blob
+            )
+          ) {
+
+            const response =
+              new Response(
+                result,
+                {
+                  status: 200,
+
+                  headers: {
+                    "Content-Type":
+                      "audio/mpeg",
+                    "Cache-Control":
+                      "no-store"
+                  }
+                }
+              );
+
+
+            return addCors(
+              response,
+              request
+            );
+
+          }
+
+
+          /*
+           * Fallback JSON
+           */
+
+          return returnWrapper(
+            {
+              statusCode: 200,
+
+              headers: {
+                "content-type":
+                  "application/json; charset=utf-8"
+              },
+
+              body:
+                JSON.stringify(
+                  result || {}
+                )
+            },
+            request
+          );
+
+        }
+
+        catch (error) {
+
+          return jsonError(
+            error?.message ||
+              "Google TTS error",
+            500,
+            request
+          );
+
+        }
+
+      }
+
+
+      /* ===================================================
+         UNKNOWN ENGINE
+      =================================================== */
+
+      return jsonError(
+        `Unknown TTS engine: ${engine}`,
+        400,
+        request,
+        {
+          availableEngines: [
+            "edge",
+            "google",
+            "tiktok"
+          ]
+        }
       );
 
+    }
 
-    } catch (err) {
+    catch (error) {
 
       console.error(
         "TTS Worker Error:",
-        err
+        error
       );
 
 
-      return new Response(
-        JSON.stringify({
-          message:
-            err?.message ||
-            "TTS error"
-        }),
-        {
-          status: 500,
-
-          headers: {
-            "Content-Type":
-              "application/json; charset=utf-8",
-
-            ...corsHeaders(
-              request
-            )
-          }
-        }
+      return jsonError(
+        error?.message ||
+          "TTS error",
+        500,
+        request
       );
+
     }
+
   }
+
 };
