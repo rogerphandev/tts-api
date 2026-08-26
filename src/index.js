@@ -1,4 +1,4 @@
-import googleTTS from "../google-tts.js";
+import googleTTS from "../worker.google-tts.js";
 
 import {
   edgeTTS,
