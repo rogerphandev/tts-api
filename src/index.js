@@ -4,8 +4,7 @@ import googleTTS
 import {
   edgeTTS,
   edgeTTSGroups,
-  edgeTTSVoicesByGroup,
-  edgeTTSAllVoices
+  edgeTTSVoicesByGroup
 } from "../worker.edge-tts.js";
 
 import {
@@ -45,7 +44,7 @@ function corsHeaders(
 
 
   /*
-   * No Origin
+   * Server-to-server / curl
    */
 
   if (!origin) {
@@ -70,7 +69,7 @@ function corsHeaders(
 
 
   /*
-   * Allowed Origin
+   * Allowed browser origin
    */
 
   if (
@@ -94,7 +93,10 @@ function corsHeaders(
         "true",
 
       "Access-Control-Max-Age":
-        "86400"
+        "86400",
+
+      "Vary":
+        "Origin"
 
     };
 
@@ -122,8 +124,13 @@ function addCors(
 
 
   for (
-    const [key, value]
-    of Object.entries(headers)
+    const [
+      key,
+      value
+    ]
+    of Object.entries(
+      headers
+    )
   ) {
 
     response.headers.set(
@@ -140,12 +147,81 @@ function addCors(
 
 
 /* =========================================================
+   JSON RESPONSE
+========================================================= */
+
+function json(
+  data,
+  status,
+  request
+) {
+
+  return new Response(
+    JSON.stringify(data),
+    {
+      status,
+
+      headers: {
+
+        "Content-Type":
+          "application/json; charset=utf-8",
+
+        "Cache-Control":
+          "no-store",
+
+        ...corsHeaders(
+          request
+        )
+
+      }
+    }
+  );
+
+}
+
+
+/* =========================================================
+   ERROR
+========================================================= */
+
+function jsonError(
+  message,
+  status,
+  request,
+  extra = {}
+) {
+
+  return json(
+    {
+      message,
+      ...extra
+    },
+    status,
+    request
+  );
+
+}
+
+
+/* =========================================================
    PARSE REQUEST
 ========================================================= */
 
 async function getPayload(
   request
 ) {
+
+  const url =
+    new URL(
+      request.url
+    );
+
+
+  const query =
+    Object.fromEntries(
+      url.searchParams.entries()
+    );
+
 
   let body = {};
 
@@ -186,15 +262,12 @@ async function getPayload(
    * Form
    */
 
-  let form = {};
-
-
-  if (
-    contentType.includes(
-      "multipart/form-data"
-    ) ||
+  else if (
     contentType.includes(
       "application/x-www-form-urlencoded"
+    ) ||
+    contentType.includes(
+      "multipart/form-data"
     )
   ) {
 
@@ -204,7 +277,7 @@ async function getPayload(
         await request.formData();
 
 
-      form =
+      body =
         Object.fromEntries(
           formData.entries()
         );
@@ -213,7 +286,7 @@ async function getPayload(
 
     catch {
 
-      form = {};
+      body = {};
 
     }
 
@@ -221,238 +294,16 @@ async function getPayload(
 
 
   /*
-   * Query
-   */
-
-  const url =
-    new URL(
-      request.url
-    );
-
-
-  const query =
-    Object.fromEntries(
-      url.searchParams.entries()
-    );
-
-
-  /*
-   * Priority:
-   *
-   * body
-   * form
-   * query
+   * Query overrides body
    */
 
   return {
 
     ...body,
 
-    ...form,
-
     ...query
 
   };
-
-}
-
-
-/* =========================================================
-   WRAPPER DETECTION
-========================================================= */
-
-function isWrapperResponse(
-  result
-) {
-
-  return (
-    result &&
-    typeof result === "object" &&
-    typeof result.statusCode ===
-      "number" &&
-    "headers" in result &&
-    "body" in result
-  );
-
-}
-
-
-/* =========================================================
-   JSON WRAPPER
-========================================================= */
-
-function returnWrapper(
-  result,
-  request
-) {
-
-  const body =
-    result &&
-    typeof result.body ===
-      "string"
-      ? result.body
-      : JSON.stringify(
-          result?.body ??
-          {}
-        );
-
-
-  const output = {
-
-    statusCode:
-      result?.statusCode ??
-      200,
-
-    headers:
-      result?.headers ??
-      {},
-
-    body
-
-  };
-
-
-  return new Response(
-    JSON.stringify(
-      output
-    ),
-    {
-      status: 200,
-
-      headers: {
-
-        "Content-Type":
-          "application/json; charset=utf-8",
-
-        ...corsHeaders(
-          request
-        )
-
-      }
-
-    }
-  );
-
-}
-
-
-/* =========================================================
-   RETURN AUDIO
-========================================================= */
-
-function returnAudio(
-  result,
-  request
-) {
-
-  const headers =
-    new Headers(
-      result.headers || {}
-    );
-
-
-  const cors =
-    corsHeaders(
-      request
-    );
-
-
-  for (
-    const [key, value]
-    of Object.entries(
-      cors
-    )
-  ) {
-
-    headers.set(
-      key,
-      value
-    );
-
-  }
-
-
-  return new Response(
-    result.body,
-    {
-      status:
-        result.statusCode ||
-        200,
-
-      headers
-    }
-  );
-
-}
-
-
-/* =========================================================
-   JSON ERROR
-========================================================= */
-
-function jsonError(
-  message,
-  status,
-  request,
-  extra = {}
-) {
-
-  const payload = {
-
-    statusCode:
-      status,
-
-    headers: {
-
-      "content-type":
-        "application/json; charset=utf-8",
-
-      "Cache-Control":
-        "no-store",
-
-      "Access-Control-Allow-Origin":
-        "*",
-
-      "Access-Control-Allow-Headers":
-        "*",
-
-      "Access-Control-Allow-Methods":
-        "*"
-
-    },
-
-    body:
-      JSON.stringify({
-
-        message,
-
-        ...extra
-
-      })
-
-  };
-
-
-  return new Response(
-    JSON.stringify(
-      payload
-    ),
-    {
-      status,
-
-      headers: {
-
-        "Content-Type":
-          "application/json; charset=utf-8",
-
-        ...corsHeaders(
-          request
-        )
-
-      }
-
-    }
-  );
 
 }
 
@@ -469,9 +320,9 @@ export default {
     ctx
   ) {
 
-    /*
-     * OPTIONS
-     */
+    /* =====================================================
+       OPTIONS
+    ===================================================== */
 
     if (
       request.method ===
@@ -487,8 +338,25 @@ export default {
             corsHeaders(
               request
             )
-
         }
+      );
+
+    }
+
+
+    /* =====================================================
+       GET / POST ONLY
+    ===================================================== */
+
+    if (
+      request.method !== "GET" &&
+      request.method !== "POST"
+    ) {
+
+      return jsonError(
+        "Method not allowed",
+        405,
+        request
       );
 
     }
@@ -496,9 +364,9 @@ export default {
 
     try {
 
-      /*
-       * Parse
-       */
+      /* ===================================================
+         PAYLOAD
+      =================================================== */
 
       const payload =
         await getPayload(
@@ -506,9 +374,9 @@ export default {
         );
 
 
-      /*
-       * Engine
-       */
+      /* ===================================================
+         ENGINE
+      =================================================== */
 
       const engine =
         String(
@@ -516,10 +384,6 @@ export default {
           "google"
         ).toLowerCase();
 
-
-      /*
-       * Action
-       */
 
       const action =
         String(
@@ -529,7 +393,8 @@ export default {
 
 
       /*
-       * Remove routing fields
+       * Do not pass routing params
+       * to TTS engines.
        */
 
       delete payload.engine;
@@ -550,8 +415,7 @@ export default {
         ================================================= */
 
         if (
-          action ===
-          "groups"
+          action === "groups"
         ) {
 
           const result =
@@ -560,27 +424,9 @@ export default {
             );
 
 
-          return returnWrapper(
-            {
-              statusCode:
-                200,
-
-              headers: {
-
-                "content-type":
-                  "application/json; charset=utf-8",
-
-                "Cache-Control":
-                  "no-store"
-
-              },
-
-              body:
-                JSON.stringify(
-                  result
-                )
-
-            },
+          return json(
+            result,
+            200,
             request
           );
 
@@ -602,27 +448,9 @@ export default {
             );
 
 
-          return returnWrapper(
-            {
-              statusCode:
-                200,
-
-              headers: {
-
-                "content-type":
-                  "application/json; charset=utf-8",
-
-                "Cache-Control":
-                  "no-store"
-
-              },
-
-              body:
-                JSON.stringify(
-                  result
-                )
-
-            },
+          return json(
+            result,
+            200,
             request
           );
 
@@ -630,142 +458,17 @@ export default {
 
 
         /* ================================================
-           ALL VOICES
+           TTS
         ================================================= */
 
-        if (
-          action ===
-          "voices"
-        ) {
-
-          const result =
-            await edgeTTSAllVoices();
-
-
-          return returnWrapper(
-            {
-              statusCode:
-                200,
-
-              headers: {
-
-                "content-type":
-                  "application/json; charset=utf-8",
-
-                "Cache-Control":
-                  "no-store"
-
-              },
-
-              body:
-                JSON.stringify(
-                  result
-                )
-
-            },
-            request
-          );
-
-        }
-
-
-        /* ================================================
-           EDGE SYNTHESIS
-        ================================================= */
-
-        const result =
+        const response =
           await edgeTTS(
             payload
           );
 
 
-        /*
-         * Direct Response
-         */
-
-        if (
-          result instanceof
-          Response
-        ) {
-
-          return addCors(
-            result,
-            request
-          );
-
-        }
-
-
-        /*
-         * Wrapper
-         */
-
-        if (
-          isWrapperResponse(
-            result
-          )
-        ) {
-
-          /*
-           * Binary
-           */
-
-          if (
-
-            result.body instanceof
-              Uint8Array ||
-
-            result.body instanceof
-              ArrayBuffer ||
-
-            (
-              typeof Blob !==
-              "undefined" &&
-
-              result.body instanceof
-                Blob
-            )
-
-          ) {
-
-            return returnAudio(
-              result,
-              request
-            );
-
-          }
-
-
-          return returnWrapper(
-            result,
-            request
-          );
-
-        }
-
-
-        /*
-         * Fallback
-         */
-
-        return returnWrapper(
-          {
-            statusCode:
-              200,
-
-            headers: {
-
-              "content-type":
-                "application/json; charset=utf-8"
-
-            },
-
-            body:
-              JSON.stringify(
-                result || {}
-              )
-
-          },
+        return addCors(
+          response,
           request
         );
 
@@ -777,13 +480,12 @@ export default {
       =================================================== */
 
       if (
-        engine ===
-        "tiktok"
+        engine === "tiktok"
       ) {
 
         try {
 
-          const audioBuffer =
+          const audio =
             await generateTikTokTTS(
               payload
             );
@@ -791,11 +493,9 @@ export default {
 
           const response =
             new Response(
-              audioBuffer,
+              audio,
               {
-
-                status:
-                  200,
+                status: 200,
 
                 headers: {
 
@@ -809,7 +509,6 @@ export default {
                     "no-store"
 
                 }
-
               }
             );
 
@@ -826,9 +525,7 @@ export default {
           return jsonError(
             error?.message ||
               "TikTok TTS error",
-
             500,
-
             request
           );
 
@@ -842,8 +539,7 @@ export default {
       =================================================== */
 
       if (
-        engine ===
-        "google"
+        engine === "google"
       ) {
 
         try {
@@ -855,7 +551,7 @@ export default {
 
 
           /*
-           * Direct Response
+           * Response
            */
 
           if (
@@ -872,78 +568,19 @@ export default {
 
 
           /*
-           * Wrapper
+           * Uint8Array
            */
 
           if (
-            isWrapperResponse(
-              result
-            )
+            result instanceof
+            Uint8Array
           ) {
 
-            if (
-
-              result.body instanceof
-                Uint8Array ||
-
-              result.body instanceof
-                ArrayBuffer ||
-
-              (
-                typeof Blob !==
-                "undefined" &&
-
-                result.body instanceof
-                  Blob
-              )
-
-            ) {
-
-              return returnAudio(
-                result,
-                request
-              );
-
-            }
-
-
-            return returnWrapper(
-              result,
-              request
-            );
-
-          }
-
-
-          /*
-           * Raw binary
-           */
-
-          if (
-
-            result instanceof
-              Uint8Array ||
-
-            result instanceof
-              ArrayBuffer ||
-
-            (
-              typeof Blob !==
-              "undefined" &&
-
-              result instanceof
-                Blob
-            )
-
-          ) {
-
-            const response =
+            return addCors(
               new Response(
                 result,
                 {
-
-                  status:
-                    200,
+                  status: 200,
 
                   headers: {
 
@@ -954,13 +591,8 @@ export default {
                       "no-store"
 
                   }
-
                 }
-              );
-
-
-            return addCors(
-              response,
+              ),
               request
             );
 
@@ -968,27 +600,44 @@ export default {
 
 
           /*
-           * JSON
+           * ArrayBuffer
            */
 
-          return returnWrapper(
-            {
-              statusCode:
-                200,
+          if (
+            result instanceof
+            ArrayBuffer
+          ) {
 
-              headers: {
+            return addCors(
+              new Response(
+                result,
+                {
+                  status: 200,
 
-                "content-type":
-                  "application/json; charset=utf-8"
+                  headers: {
 
-              },
+                    "Content-Type":
+                      "audio/mpeg",
 
-              body:
-                JSON.stringify(
-                  result || {}
-                )
+                    "Cache-Control":
+                      "no-store"
 
-            },
+                  }
+                }
+              ),
+              request
+            );
+
+          }
+
+
+          /*
+           * Object
+           */
+
+          return json(
+            result || {},
+            200,
             request
           );
 
@@ -999,9 +648,7 @@ export default {
           return jsonError(
             error?.message ||
               "Google TTS error",
-
             500,
-
             request
           );
 
@@ -1016,23 +663,14 @@ export default {
 
       return jsonError(
         `Unknown TTS engine: ${engine}`,
-
         400,
-
         request,
-
         {
-
           availableEngines: [
-
             "edge",
-
             "google",
-
             "tiktok"
-
           ]
-
         }
       );
 
@@ -1048,10 +686,8 @@ export default {
 
       return jsonError(
         error?.message ||
-          "TTS error",
-
+          "TTS Worker error",
         500,
-
         request
       );
 
