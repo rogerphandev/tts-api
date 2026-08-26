@@ -1,6 +1,6 @@
 /**
  * =========================================================
- * EDGE TTS - CLOUDFLARE WORKERS (FIXED 403 FORBIDDEN)
+ * EDGE TTS - CLOUDFLARE WORKERS (FIXED 403 & TIMEOUT)
  * =========================================================
  *
  * Supported:
@@ -62,30 +62,28 @@ function requestId() {
 }
 
 /* =========================================================
-   SEC-MS-GEC
+   SEC-MS-GEC (FIXED BIGINT TICK CALCULATION)
 ========================================================= */
 
 async function generateSecMsGec() {
-  const unixSeconds =
-    Math.floor(Date.now() / 1000);
+  /*
+   * Số Windows Ticks tính từ Epoch (1601-01-01 UTC)
+   * 1 Unix second = 10,000,000 Ticks
+   * Epoch Offset = 11644473600 seconds = 116444736000000000 Ticks
+   */
+  const unixTicks = Date.now() * 10000;
+  const epochOffsetTicks = 116444736000000000n;
+  const currentTicks = BigInt(unixTicks) + epochOffsetTicks;
 
-  const fileTimeSeconds =
-    unixSeconds + 11644473600;
+  /*
+   * Làm tròn xuống mốc 5 phút (300 giây = 3,000,000,000 ticks)
+   */
+  const roundedTicks = currentTicks - (currentTicks % 3000000000n);
 
-  const rounded =
-    fileTimeSeconds - (fileTimeSeconds % 300);
+  const value = `${roundedTicks}${TRUSTED_CLIENT_TOKEN}`;
 
-  const windowsTicks =
-    rounded * 10000000;
-
-  const value =
-    `${windowsTicks}${TRUSTED_CLIENT_TOKEN}`;
-
-  const data =
-    new TextEncoder().encode(value);
-
-  const hash =
-    await crypto.subtle.digest("SHA-256", data);
+  const data = new TextEncoder().encode(value);
+  const hash = await crypto.subtle.digest("SHA-256", data);
 
   return Array.from(new Uint8Array(hash))
     .map(byte => byte.toString(16).padStart(2, "0"))
@@ -298,8 +296,7 @@ export async function edgeTTS(payload = {}) {
 
   try {
     /*
-     * FIX 403 FORBIDDEN:
-     * Truyền đầy đủ Headers giả lập extension Read Aloud của Microsoft Edge
+     * Bổ sung đầy đủ Headers giả lập Microsoft Edge Read Aloud
      */
     response = await fetch(url, {
       headers: {
