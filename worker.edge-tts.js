@@ -296,7 +296,7 @@ export async function edgeTTS(payload = {}) {
 
   try {
     /*
-     * Bổ sung đầy đủ Headers giả lập Microsoft Edge Read Aloud
+     * Full Headers matching Edge Read Aloud
      */
     response = await fetch(url, {
       headers: {
