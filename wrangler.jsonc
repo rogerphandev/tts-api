@@ -1,6 +1,6 @@
 {
   "name": "tts-api",
-  "main": "functions/netlify.js",
+  "main": "src/index.js",
   "compatibility_date": "2026-08-26",
   "compatibility_flags": [
     "nodejs_compat"
