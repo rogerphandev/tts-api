@@ -1,8 +1,25 @@
+/**
+ * Microsoft Edge TTS for Cloudflare Workers
+ *
+ * 100% Cloudflare Workers
+ * No Node.js
+ * No fs
+ * No FFmpeg
+ * No @andresaya/edge-tts
+ * No new WebSocket()
+ *
+ * Endpoints handled by index.js:
+ *
+ * ?engine=edge
+ * ?engine=edge&action=groups
+ * ?engine=edge&action=voices-by-group&group=en-US
+ */
+
 const TRUSTED_CLIENT_TOKEN =
   "6A5AA1D4EAFF4E9FB37E23D68491D6F4";
 
 const EDGE_TTS_URL =
-  "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
+  "https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1";
 
 const VOICES_URL =
   "https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/voices/list";
@@ -10,17 +27,42 @@ const VOICES_URL =
 const CHROMIUM_FULL_VERSION =
   "143.0.3650.75";
 
+
+/* =========================================================
+   OUTPUT FORMATS
+========================================================= */
+
 const OUTPUT_FORMAT = {
-  MP3_48: "audio-24khz-48kbitrate-mono-mp3",
-  MP3_96: "audio-24khz-96kbitrate-mono-mp3",
-  WEBM: "webm-24khz-16bit-mono-opus"
+
+  MP3_48:
+    "audio-24khz-48kbitrate-mono-mp3",
+
+  MP3_96:
+    "audio-24khz-96kbitrate-mono-mp3",
+
+  WEBM:
+    "webm-24khz-16bit-mono-opus"
+
 };
 
+
+/* =========================================================
+   CORS
+========================================================= */
+
 const CORS_HEADERS = {
+
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Headers": "*",
-  "Access-Control-Allow-Methods": "*",
-  "Cache-Control": "no-store"
+
+  "Access-Control-Allow-Headers":
+    "*",
+
+  "Access-Control-Allow-Methods":
+    "*",
+
+  "Cache-Control":
+    "no-store"
+
 };
 
 
@@ -29,8 +71,19 @@ const CORS_HEADERS = {
 ========================================================= */
 
 async function generateSecMsGec() {
+
+  /*
+   * Microsoft Edge TTS uses Windows FILETIME.
+   *
+   * Unix -> Windows epoch:
+   * 11644473600 seconds
+   *
+   * Rounded to 5 minutes.
+   */
+
   const ticks =
-    Math.floor(Date.now() / 1000) + 11644473600;
+    Math.floor(Date.now() / 1000)
+    + 11644473600;
 
   const rounded =
     ticks - (ticks % 300);
@@ -51,11 +104,14 @@ async function generateSecMsGec() {
 
   return Array
     .from(new Uint8Array(hash))
-    .map(x =>
-      x.toString(16).padStart(2, "0")
+    .map(byte =>
+      byte
+        .toString(16)
+        .padStart(2, "0")
     )
     .join("")
     .toUpperCase();
+
 }
 
 
@@ -64,9 +120,11 @@ async function generateSecMsGec() {
 ========================================================= */
 
 function requestId() {
+
   return crypto
     .randomUUID()
     .replaceAll("-", "");
+
 }
 
 
@@ -75,23 +133,27 @@ function requestId() {
 ========================================================= */
 
 function escapeXml(value) {
+
   return String(value)
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&apos;");
+
 }
 
 
 /* =========================================================
-   TIMESTAMP
+   EDGE TIMESTAMP
 ========================================================= */
 
 function edgeTimestamp() {
+
   return new Date()
     .toUTCString()
     .replace("UTC", "GMT");
+
 }
 
 
@@ -106,28 +168,36 @@ function createSSML(
   rate,
   volume
 ) {
+
+  const safeText =
+    escapeXml(text);
+
+  const safeVoice =
+    escapeXml(voice);
+
   return `
 <speak
- version="1.0"
- xmlns="http://www.w3.org/2001/10/synthesis"
- xmlns:mstts="https://www.w3.org/2001/mstts"
- xml:lang="en-US">
+  version="1.0"
+  xmlns="http://www.w3.org/2001/10/synthesis"
+  xmlns:mstts="https://www.w3.org/2001/mstts"
+  xml:lang="en-US">
 
- <voice name="${escapeXml(voice)}">
+  <voice name="${safeVoice}">
 
-  <prosody
-   pitch="${escapeXml(pitch)}"
-   rate="${escapeXml(rate)}"
-   volume="${escapeXml(volume)}">
+    <prosody
+      pitch="${pitch}"
+      rate="${rate}"
+      volume="${volume}">
 
-   ${escapeXml(text)}
+      ${safeText}
 
-  </prosody>
+    </prosody>
 
- </voice>
+  </voice>
 
 </speak>
 `.trim();
+
 }
 
 
@@ -135,25 +205,46 @@ function createSSML(
    SPEECH CONFIG
 ========================================================= */
 
-function createSpeechConfig(outputFormat) {
+function createSpeechConfig(
+  outputFormat
+) {
+
   return (
     `X-Timestamp:${edgeTimestamp()}\r\n` +
+
     `Content-Type:application/json; charset=utf-8\r\n` +
+
     `Path:speech.config\r\n\r\n` +
+
     JSON.stringify({
+
       context: {
+
         synthesis: {
+
           audio: {
+
             metadataoptions: {
-              sentenceBoundaryEnabled: false,
-              wordBoundaryEnabled: true
+
+              sentenceBoundaryEnabled:
+                false,
+
+              wordBoundaryEnabled:
+                false
+
             },
+
             outputFormat
+
           }
+
         }
+
       }
+
     })
   );
+
 }
 
 
@@ -169,152 +260,38 @@ function createSSMLMessage(
   volume,
   id
 ) {
-  return (
-    `X-RequestId:${id}\r\n` +
-    `Content-Type:application/ssml+xml\r\n` +
-    `X-Timestamp:${edgeTimestamp()}\r\n` +
-    `Path:ssml\r\n\r\n` +
+
+  const ssml =
     createSSML(
       text,
       voice,
       pitch,
       rate,
       volume
-    )
+    );
+
+  return (
+
+    `X-RequestId:${id}\r\n` +
+
+    `Content-Type:application/ssml+xml\r\n` +
+
+    `X-Timestamp:${edgeTimestamp()}\r\n` +
+
+    `Path:ssml\r\n\r\n` +
+
+    ssml
+
   );
+
 }
 
 
 /* =========================================================
-   BINARY AUDIO
+   BUILD EDGE TTS URL
 ========================================================= */
 
-async function extractAudio(data) {
-  let bytes;
-
-  if (data instanceof ArrayBuffer) {
-    bytes = new Uint8Array(data);
-
-  } else if (
-    typeof Blob !== "undefined" &&
-    data instanceof Blob
-  ) {
-    bytes =
-      new Uint8Array(
-        await data.arrayBuffer()
-      );
-
-  } else if (
-    data instanceof Uint8Array
-  ) {
-    bytes = data;
-
-  } else if (
-    ArrayBuffer.isView(data)
-  ) {
-    bytes =
-      new Uint8Array(
-        data.buffer,
-        data.byteOffset,
-        data.byteLength
-      );
-
-  } else {
-    return null;
-  }
-
-  if (bytes.length < 2) {
-    return null;
-  }
-
-  const headerLength =
-    (bytes[0] << 8) | bytes[1];
-
-  const audioStart =
-    2 + headerLength;
-
-  if (audioStart > bytes.length) {
-    return null;
-  }
-
-  const headerBytes =
-    bytes.slice(
-      2,
-      audioStart
-    );
-
-  const headers =
-    new TextDecoder()
-      .decode(headerBytes);
-
-  if (!headers.includes("Path:audio")) {
-    return null;
-  }
-
-  return bytes.slice(audioStart);
-}
-
-
-/* =========================================================
-   EDGE TTS
-========================================================= */
-
-export async function edgeTTS(payload = {}) {
-
-  const {
-    text,
-    voice = "en-US-AriaNeural",
-    pitch = "+0Hz",
-    rate = "0%",
-    volume = "100%",
-    format = "mp3"
-  } = payload;
-
-
-  if (!text || !String(text).trim()) {
-    return jsonResponse(
-      {
-        message: "Text is required"
-      },
-      400
-    );
-  }
-
-
-  let outputFormat;
-  let contentType;
-  let filename;
-
-
-  switch (String(format).toLowerCase()) {
-
-    case "mp3-96":
-      outputFormat =
-        OUTPUT_FORMAT.MP3_96;
-      contentType =
-        "audio/mpeg";
-      filename =
-        "edge-tts.mp3";
-      break;
-
-    case "webm":
-      outputFormat =
-        OUTPUT_FORMAT.WEBM;
-      contentType =
-        "audio/webm; codecs=opus";
-      filename =
-        "edge-tts.webm";
-      break;
-
-    default:
-      outputFormat =
-        OUTPUT_FORMAT.MP3_48;
-      contentType =
-        "audio/mpeg";
-      filename =
-        "edge-tts.mp3";
-  }
-
+async function createEdgeUrl() {
 
   const secMsGec =
     await generateSecMsGec();
@@ -322,61 +299,449 @@ export async function edgeTTS(payload = {}) {
   const connectionId =
     requestId();
 
-
   const url =
     `${EDGE_TTS_URL}` +
+
     `?TrustedClientToken=${encodeURIComponent(
       TRUSTED_CLIENT_TOKEN
     )}` +
+
     `&Sec-MS-GEC=${encodeURIComponent(
       secMsGec
     )}` +
+
     `&Sec-MS-GEC-Version=1-${encodeURIComponent(
       CHROMIUM_FULL_VERSION
     )}` +
+
     `&ConnectionId=${connectionId}`;
 
+  return {
+    url,
+    connectionId
+  };
 
-  console.log(
-    "EDGE TTS URL:",
-    url
+}
+
+
+/* =========================================================
+   CONNECT OUTBOUND WEBSOCKET
+========================================================= */
+
+async function connectEdgeWebSocket(url) {
+
+  /*
+   * IMPORTANT:
+   *
+   * Cloudflare Workers supports outbound
+   * WebSocket through fetch() + Upgrade.
+   *
+   * We intentionally do NOT use:
+   *
+   * new WebSocket(...)
+   */
+
+  const response =
+    await fetch(
+      url,
+      {
+        method: "GET",
+
+        headers: {
+
+          "Upgrade":
+            "websocket",
+
+          "Connection":
+            "Upgrade",
+
+          "User-Agent":
+            `Mozilla/5.0 (Windows NT 10.0; Win64; x64) ` +
+            `AppleWebKit/537.36 ` +
+            `(KHTML, like Gecko) ` +
+            `Chrome/${CHROMIUM_FULL_VERSION} ` +
+            `Safari/537.36 ` +
+            `Edg/${CHROMIUM_FULL_VERSION}`
+
+        }
+
+      }
+    );
+
+  if (!response.ok) {
+
+    let body = "";
+
+    try {
+      body =
+        await response.text();
+    } catch {
+      body = "";
+    }
+
+    throw new Error(
+      `Edge TTS WebSocket handshake failed: ` +
+      `${response.status}` +
+      (body ? ` - ${body.slice(0, 500)}` : "")
+    );
+
+  }
+
+  const ws =
+    response.webSocket;
+
+  if (!ws) {
+
+    throw new Error(
+      "Edge TTS server did not return WebSocket"
+    );
+
+  }
+
+  /*
+   * Accept the remote WebSocket.
+   */
+
+  ws.accept();
+
+  /*
+   * Force binary messages to ArrayBuffer.
+   */
+
+  try {
+    ws.binaryType =
+      "arraybuffer";
+  } catch {
+    // ignore
+  }
+
+  return ws;
+
+}
+
+
+/* =========================================================
+   CONVERT WS MESSAGE TO BYTES
+========================================================= */
+
+async function messageToBytes(data) {
+
+  if (
+    data instanceof ArrayBuffer
+  ) {
+
+    return new Uint8Array(data);
+
+  }
+
+  if (
+    typeof Blob !== "undefined" &&
+    data instanceof Blob
+  ) {
+
+    return new Uint8Array(
+      await data.arrayBuffer()
+    );
+
+  }
+
+  if (
+    data instanceof Uint8Array
+  ) {
+
+    return data;
+
+  }
+
+  if (
+    ArrayBuffer.isView(data)
+  ) {
+
+    return new Uint8Array(
+      data.buffer,
+      data.byteOffset,
+      data.byteLength
+    );
+
+  }
+
+  return null;
+
+}
+
+
+/* =========================================================
+   EXTRACT AUDIO
+========================================================= */
+
+async function extractAudio(data) {
+
+  const bytes =
+    await messageToBytes(data);
+
+  if (!bytes) {
+    return null;
+  }
+
+  /*
+   * Edge TTS binary message:
+   *
+   * 2 bytes:
+   * header length
+   *
+   * headers
+   *
+   * audio
+   */
+
+  if (bytes.length < 2) {
+    return null;
+  }
+
+  const headerLength =
+    (bytes[0] << 8) |
+    bytes[1];
+
+  const headerStart = 2;
+
+  const audioStart =
+    headerStart +
+    headerLength;
+
+  if (
+    audioStart > bytes.length
+  ) {
+
+    return null;
+
+  }
+
+  const headerBytes =
+    bytes.slice(
+      headerStart,
+      audioStart
+    );
+
+  const headers =
+    new TextDecoder()
+      .decode(headerBytes);
+
+  if (
+    !headers.includes(
+      "Path:audio"
+    )
+  ) {
+
+    return null;
+
+  }
+
+  return bytes.slice(
+    audioStart
   );
+
+}
+
+
+/* =========================================================
+   EDGE TTS
+========================================================= */
+
+export async function edgeTTS(
+  payload = {}
+) {
+
+  const {
+
+    text,
+
+    voice =
+      "en-US-AriaNeural",
+
+    pitch =
+      "+0Hz",
+
+    rate =
+      "0%",
+
+    volume =
+      "100%",
+
+    format =
+      "mp3"
+
+  } = payload;
+
+
+  /* =======================================================
+     VALIDATE TEXT
+  ======================================================= */
+
+  if (
+    !text ||
+    !String(text).trim()
+  ) {
+
+    return Response.json(
+
+      {
+        message:
+          "Text is required",
+
+        example: {
+
+          text:
+            "Hello world",
+
+          voice:
+            "en-US-AriaNeural",
+
+          pitch:
+            "+0Hz",
+
+          rate:
+            "0%",
+
+          volume:
+            "100%",
+
+          format:
+            "mp3"
+
+        }
+
+      },
+
+      {
+        status: 400,
+
+        headers:
+          CORS_HEADERS
+
+      }
+
+    );
+
+  }
+
+
+  /* =======================================================
+     FORMAT
+  ======================================================= */
+
+  let outputFormat;
+
+  let contentType;
+
+  let filename;
+
+
+  switch (
+    String(format).toLowerCase()
+  ) {
+
+    case "mp3-96":
+
+      outputFormat =
+        OUTPUT_FORMAT.MP3_96;
+
+      contentType =
+        "audio/mpeg";
+
+      filename =
+        "edge-tts.mp3";
+
+      break;
+
+
+    case "webm":
+
+      outputFormat =
+        OUTPUT_FORMAT.WEBM;
+
+      contentType =
+        "audio/webm; codecs=opus";
+
+      filename =
+        "edge-tts.webm";
+
+      break;
+
+
+    case "mp3":
+
+    default:
+
+      outputFormat =
+        OUTPUT_FORMAT.MP3_48;
+
+      contentType =
+        "audio/mpeg";
+
+      filename =
+        "edge-tts.mp3";
+
+      break;
+
+  }
+
+
+  /* =======================================================
+     CONNECT
+  ======================================================= */
+
+  const {
+
+    url,
+
+    connectionId
+
+  } =
+    await createEdgeUrl();
 
 
   let ws;
 
   try {
 
-    ws = new WebSocket(url);
+    ws =
+      await connectEdgeWebSocket(
+        url
+      );
 
   } catch (error) {
 
-    return jsonResponse(
-      {
-        message:
-          "Failed to create Edge TTS WebSocket",
-
-        error:
-          error?.message || String(error),
-
-        url
-      },
-      500
+    throw new Error(
+      error?.message ||
+      "Edge TTS WebSocket connection failed"
     );
 
   }
 
 
+  /* =======================================================
+     AUDIO
+  ======================================================= */
+
   const audioChunks = [];
 
   let finished = false;
 
+  let audioReceived = false;
+
+  let timeoutId;
+
 
   return await new Promise(
-    (resolve) => {
+    (resolve, reject) => {
 
-      const timeout =
-        setTimeout(() => {
+
+      /* ===================================================
+         FINISH
+      =================================================== */
+
+      const finish =
+        (error = null) => {
 
           if (finished) {
             return;
@@ -384,66 +749,185 @@ export async function edgeTTS(payload = {}) {
 
           finished = true;
 
+          if (timeoutId) {
+            clearTimeout(timeoutId);
+          }
+
           try {
             ws.close();
-          } catch {}
-
-          resolve(
-            jsonResponse(
-              {
-                message:
-                  "Edge TTS WebSocket timeout",
-
-                readyState:
-                  ws.readyState
-              },
-              500
-            )
-          );
-
-        }, 30000);
+          } catch {
+            // ignore
+          }
 
 
-      ws.addEventListener(
-        "open",
-        () => {
+          if (error) {
 
-          try {
+            reject(error);
 
-            ws.send(
-              createSpeechConfig(
-                outputFormat
-              )
-            );
-
-            ws.send(
-              createSSMLMessage(
-                String(text),
-                voice,
-                pitch,
-                rate,
-                volume,
-                connectionId
-              )
-            );
-
-          } catch (error) {
-
-            finish(
-              error
-            );
+            return;
 
           }
 
-        }
-      );
 
+          if (
+            !audioChunks.length
+          ) {
+
+            reject(
+              new Error(
+                "Edge TTS returned no audio"
+              )
+            );
+
+            return;
+
+          }
+
+
+          let totalLength =
+            0;
+
+          for (
+            const chunk
+            of audioChunks
+          ) {
+
+            totalLength +=
+              chunk.length;
+
+          }
+
+
+          const output =
+            new Uint8Array(
+              totalLength
+            );
+
+
+          let offset = 0;
+
+
+          for (
+            const chunk
+            of audioChunks
+          ) {
+
+            output.set(
+              chunk,
+              offset
+            );
+
+            offset +=
+              chunk.length;
+
+          }
+
+
+          resolve(
+
+            new Response(
+              output,
+
+              {
+
+                status: 200,
+
+                headers: {
+
+                  "Content-Type":
+                    contentType,
+
+                  "Content-Disposition":
+                    `inline; filename="${filename}"`,
+
+                  "Content-Length":
+                    String(
+                      output.byteLength
+                    ),
+
+                  ...CORS_HEADERS
+
+                }
+
+              }
+
+            )
+
+          );
+
+        };
+
+
+      /* ===================================================
+         TIMEOUT
+      =================================================== */
+
+      timeoutId =
+        setTimeout(
+          () => {
+
+            finish(
+              new Error(
+                "Edge TTS timeout"
+              )
+            );
+
+          },
+          30000
+        );
+
+
+      /* ===================================================
+         OPEN
+      =================================================== */
+
+      try {
+
+        ws.send(
+          createSpeechConfig(
+            outputFormat
+          )
+        );
+
+
+        ws.send(
+          createSSMLMessage(
+            String(text),
+            voice,
+            pitch,
+            rate,
+            volume,
+            connectionId
+          )
+        );
+
+      } catch (error) {
+
+        finish(error);
+
+        return;
+
+      }
+
+
+      /* ===================================================
+         MESSAGE
+      =================================================== */
 
       ws.addEventListener(
         "message",
         async event => {
 
+          if (finished) {
+            return;
+          }
+
+
           try {
+
+            /*
+             * Binary audio
+             */
 
             const audio =
               await extractAudio(
@@ -453,13 +937,21 @@ export async function edgeTTS(payload = {}) {
 
             if (audio) {
 
+              audioReceived =
+                true;
+
               audioChunks.push(
                 audio
               );
 
               return;
+
             }
 
+
+            /*
+             * Text protocol message
+             */
 
             if (
               typeof event.data ===
@@ -469,22 +961,56 @@ export async function edgeTTS(payload = {}) {
               const message =
                 event.data;
 
-              console.log(
-                "EDGE MESSAGE:",
-                message
-              );
 
+              /*
+               * Edge TTS sends:
+               *
+               * Path:turn.end
+               *
+               * at the end of synthesis.
+               */
 
               if (
                 message.includes(
                   "Path:turn.end"
-                ) ||
+                )
+              ) {
+
+                finish();
+
+                return;
+
+              }
+
+
+              if (
                 message.includes(
                   "Path:session.end"
                 )
               ) {
 
                 finish();
+
+                return;
+
+              }
+
+
+              /*
+               * Detect Edge server errors.
+               */
+
+              if (
+                message.includes(
+                  "Path:error"
+                )
+              ) {
+
+                finish(
+                  new Error(
+                    `Edge TTS error: ${message.slice(0, 1000)}`
+                  )
+                );
 
               }
 
@@ -500,12 +1026,20 @@ export async function edgeTTS(payload = {}) {
       );
 
 
+      /* ===================================================
+         ERROR
+      =================================================== */
+
       ws.addEventListener(
         "error",
         event => {
 
+          if (finished) {
+            return;
+          }
+
           console.error(
-            "EDGE WEBSOCKET ERROR:",
+            "Edge TTS WebSocket error:",
             event
           );
 
@@ -519,32 +1053,33 @@ export async function edgeTTS(payload = {}) {
       );
 
 
+      /* ===================================================
+         CLOSE
+      =================================================== */
+
       ws.addEventListener(
         "close",
-        event => {
-
-          console.error(
-            "EDGE WEBSOCKET CLOSE:",
-            {
-              code: event.code,
-              reason: event.reason,
-              wasClean: event.wasClean
-            }
-          );
-
+        () => {
 
           if (finished) {
             return;
           }
 
 
-          if (audioChunks.length) {
+          /*
+           * Some Microsoft responses close
+           * immediately after final audio.
+           */
+
+          if (audioReceived) {
+
             finish();
+
           } else {
 
             finish(
               new Error(
-                `Edge TTS WebSocket closed: ${event.code} ${event.reason || ""}`
+                "Edge TTS WebSocket closed without audio"
               )
             );
 
@@ -553,142 +1088,6 @@ export async function edgeTTS(payload = {}) {
         }
       );
 
-
-      function finish(error = null) {
-
-        if (finished) {
-          return;
-        }
-
-        finished = true;
-
-        clearTimeout(timeout);
-
-
-        try {
-          ws.close();
-        } catch {}
-
-
-        if (error) {
-
-          resolve(
-            jsonResponse(
-              {
-                message:
-                  error?.message ||
-                  "Edge TTS error"
-              },
-              500
-            )
-          );
-
-          return;
-        }
-
-
-        if (!audioChunks.length) {
-
-          resolve(
-            jsonResponse(
-              {
-                message:
-                  "Edge TTS returned no audio"
-              },
-              500
-            )
-          );
-
-          return;
-        }
-
-
-        let totalLength = 0;
-
-        for (
-          const chunk
-          of audioChunks
-        ) {
-          totalLength +=
-            chunk.length;
-        }
-
-
-        const output =
-          new Uint8Array(
-            totalLength
-          );
-
-
-        let offset = 0;
-
-        for (
-          const chunk
-          of audioChunks
-        ) {
-
-          output.set(
-            chunk,
-            offset
-          );
-
-          offset +=
-            chunk.length;
-
-        }
-
-
-        resolve(
-          new Response(
-            output,
-            {
-              status: 200,
-
-              headers: {
-                "Content-Type":
-                  contentType,
-
-                "Content-Disposition":
-                  `inline; filename="${filename}"`,
-
-                "Content-Length":
-                  String(
-                    output.byteLength
-                  ),
-
-                ...CORS_HEADERS
-              }
-            }
-          )
-        );
-
-      }
-
-    }
-  );
-}
-
-
-/* =========================================================
-   JSON RESPONSE
-========================================================= */
-
-function jsonResponse(
-  data,
-  status = 200
-) {
-
-  return new Response(
-    JSON.stringify(data),
-    {
-      status,
-
-      headers: {
-        "Content-Type":
-          "application/json; charset=utf-8",
-
-        ...CORS_HEADERS
-      }
     }
   );
 
@@ -696,7 +1095,7 @@ function jsonResponse(
 
 
 /* =========================================================
-   GET VOICES
+   GET EDGE VOICES
 ========================================================= */
 
 export async function getEdgeVoices() {
@@ -712,17 +1111,24 @@ export async function getEdgeVoices() {
     await fetch(
       url,
       {
+
         method: "GET",
 
         headers: {
-          "Accept": "*/*",
+
+          "Accept":
+            "*/*",
 
           "User-Agent":
             `Mozilla/5.0 (Windows NT 10.0; Win64; x64) ` +
             `AppleWebKit/537.36 ` +
-            `(KHTML, like Gecko) Chrome/${CHROMIUM_FULL_VERSION} ` +
-            `Safari/537.36 Edg/${CHROMIUM_FULL_VERSION}`
+            `(KHTML, like Gecko) ` +
+            `Chrome/${CHROMIUM_FULL_VERSION} ` +
+            `Safari/537.36 ` +
+            `Edg/${CHROMIUM_FULL_VERSION}`
+
         }
+
       }
     );
 
@@ -737,6 +1143,7 @@ export async function getEdgeVoices() {
 
 
   return await response.json();
+
 }
 
 
@@ -744,7 +1151,9 @@ export async function getEdgeVoices() {
    LOCALE LABEL
 ========================================================= */
 
-function localeToLabel(locale) {
+function localeToLabel(
+  locale
+) {
 
   try {
 
@@ -752,15 +1161,45 @@ function localeToLabel(locale) {
       !locale ||
       !locale.includes("-")
     ) {
+
       return locale;
+
     }
 
 
-    const [
-      languageCode,
-      regionCode
-    ] =
+    /*
+     * Special Microsoft locales such as:
+     *
+     * iu-Cans-CA
+     * iu-Latn-CA
+     *
+     * should not be incorrectly split.
+     */
+
+    const parts =
       locale.split("-");
+
+
+    let languageCode =
+      parts[0];
+
+    let regionCode =
+      parts[parts.length - 1];
+
+
+    /*
+     * For locales where the final part
+     * is a script rather than country.
+     */
+
+    if (
+      regionCode.length !== 2 &&
+      regionCode.length !== 3
+    ) {
+
+      return locale;
+
+    }
 
 
     const language =
@@ -785,7 +1224,19 @@ function localeToLabel(locale) {
       );
 
 
-    return `${language} (${country})`;
+    if (
+      !language ||
+      !country
+    ) {
+
+      return locale;
+
+    }
+
+
+    return (
+      `${language} (${country})`
+    );
 
   } catch {
 
@@ -800,18 +1251,25 @@ function localeToLabel(locale) {
    GROUPS
 ========================================================= */
 
-export async function edgeTTSGroups() {
+export async function edgeTTSGroups(
+  payload = {}
+) {
 
   const allVoices =
     await getEdgeVoices();
 
 
   const options = [
+
     ...new Map(
+
       allVoices.map(
         voice => [
+
           voice.Locale,
+
           {
+
             value:
               voice.Locale,
 
@@ -819,10 +1277,14 @@ export async function edgeTTSGroups() {
               localeToLabel(
                 voice.Locale
               )
+
           }
+
         ]
       )
+
     ).values()
+
   ].sort(
     (a, b) =>
       a.value.localeCompare(
@@ -831,13 +1293,35 @@ export async function edgeTTSGroups() {
   );
 
 
-  return jsonResponse(
+  return Response.json(
+
     {
+
       totalLocales:
         options.length,
 
       options
+
+    },
+
+    {
+
+      status: 200,
+
+      headers: {
+
+        "Content-Type":
+          "application/json; charset=utf-8",
+
+        "Cache-Control":
+          "no-store",
+
+        ...CORS_HEADERS
+
+      }
+
     }
+
   );
 
 }
@@ -870,25 +1354,61 @@ export async function edgeTTSVoicesByGroup(
   const options =
     voices.map(
       voice => ({
+
         value:
           voice.ShortName ||
           voice.Name,
 
         label:
-          `${voice.Gender} - ${voice.DisplayName}`
+          `${voice.Gender} - ${voice.DisplayName}`,
+
+        shortName:
+          voice.ShortName,
+
+        name:
+          voice.Name,
+
+        gender:
+          voice.Gender,
+
+        locale:
+          voice.Locale
+
       })
     );
 
 
-  return jsonResponse(
+  return Response.json(
+
     {
+
       group,
 
       total:
         options.length,
 
       options
+
+    },
+
+    {
+
+      status: 200,
+
+      headers: {
+
+        "Content-Type":
+          "application/json; charset=utf-8",
+
+        "Cache-Control":
+          "no-store",
+
+        ...CORS_HEADERS
+
+      }
+
     }
+
   );
 
 }
