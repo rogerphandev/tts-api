@@ -4,7 +4,7 @@ import {
   edgeTTS,
   edgeTTSGroups,
   edgeTTSVoicesByGroup
-} from "../edge-tts.js";
+} from "../worker.edge-tts.js";
 
 import { generateTikTokTTS } from "../tiktok-tts.js";
 
