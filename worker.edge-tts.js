@@ -1,5 +1,5 @@
 /* ====================================================================
-   CONFIG & CONSTANTS (Từ Azure / Edge Translator Engine)
+   CONFIG & CONSTANTS (Microsoft Translator Engine)
 ==================================================================== */
 const ENDPOINT_URL = "https://dev.microsofttranslator.com/apps/endpoint?api-version=1.0";
 const USER_AGENT = "okhttp/4.5.0";
@@ -139,7 +139,7 @@ function localeToLabel(locale) {
   }
 }
 
-/* Auth token Cache Manager */
+/* Auth Token Cache Manager */
 export async function getEndpointAndToken() {
   const currentTime = Math.floor(Date.now() / 1000);
   if (!expiredAt || currentTime > expiredAt - 60) {
@@ -150,7 +150,7 @@ export async function getEndpointAndToken() {
   return endpointCache;
 }
 
-/* Single Chunk Synthesis Core */
+/* Core Synthesize Chunk Function */
 async function synthesizeChunk(text, voiceName, rateNum, pitchNum, ep, format, style) {
   const url = `https://${ep.r}.tts.speech.microsoft.com/cognitiveservices/v1`;
   const ssml = buildSSML(text, voiceName, rateNum, pitchNum, style);
@@ -177,11 +177,11 @@ async function synthesizeChunk(text, voiceName, rateNum, pitchNum, ep, format, s
    EXPORTS: MAIN TTS API FUNCTIONS
 ==================================================================== */
 
-/* 1. edgeTTS */
+/* 1. edgeTTS - Chuyển đổi văn bản thành giọng nói */
 export async function edgeTTS(payload = {}) {
   let {
     text,
-    voice = "zh-CN-XiaoxiaoNeural",
+    voice = "vi-VN-HoaiMyNeural",
     rate = "0%",
     pitch = "0%",
     style = "general",
@@ -192,7 +192,6 @@ export async function edgeTTS(payload = {}) {
     return new Response('Missing text parameter', { status: 400, headers: CORS_HEADERS });
   }
 
-  // Chuẩn hóa định dạng Rate và Pitch
   const rateNum = String(rate).replace(/[%Hz]/g, "").replace(/^\+/, "") || "0";
   const pitchNum = String(pitch).replace(/[%Hz]/g, "").replace(/^\+/, "") || "0";
 
@@ -200,11 +199,9 @@ export async function edgeTTS(payload = {}) {
     const ep = await getEndpointAndToken();
     let audioBuffer;
 
-    // Ngắn văn bản -> Gọi trực tiếp
     if (text.length <= MAX_CHUNK_SIZE) {
       audioBuffer = await synthesizeChunk(text, voice, rateNum, pitchNum, ep, format, style);
     } else {
-      // Dài văn bản -> Tự động cắt khối ghép âm thanh
       const chunks = [];
       for (let i = 0; i < text.length; i += MAX_CHUNK_SIZE) {
         chunks.push(text.slice(i, i + MAX_CHUNK_SIZE));
@@ -247,38 +244,113 @@ export async function edgeTTS(payload = {}) {
   }
 }
 
-/* 2. edgeTTSGroups */
+/* 2. edgeTTSGroups - Lấy đầy đủ 142+ Locales thời gian thực */
 export async function edgeTTSGroups() {
   try {
-    const defaultLocales = [
-      'vi-VN', 'zh-CN', 'en-US', 'ja-JP', 'ko-KR', 
-      'fr-FR', 'de-DE', 'es-ES', 'ru-RU', 'th-TH'
-    ];
+    const ep = await getEndpointAndToken();
 
-    const options = defaultLocales.map(locale => ({
-      value: locale,
-      label: localeToLabel(locale)
-    }));
+    const res = await fetch(
+      `https://${ep.r}.tts.speech.microsoft.com/cognitiveservices/voices/list`,
+      {
+        headers: {
+          "Authorization": ep.t,
+          "User-Agent": USER_AGENT,
+        }
+      }
+    );
 
-    return { totalLocales: options.length, options };
+    if (!res.ok) {
+      throw new Error(`Failed to fetch voices list: ${res.status}`);
+    }
+
+    const allVoices = await res.json();
+    const uniqueGroupsMap = new Map();
+
+    for (const voice of allVoices) {
+      const locale = voice.Locale;
+      if (!locale || uniqueGroupsMap.has(locale)) continue;
+
+      uniqueGroupsMap.set(locale, {
+        value: locale,
+        label: localeToLabel(locale)
+      });
+    }
+
+    const options = Array.from(uniqueGroupsMap.values()).sort((a, b) =>
+      a.value.localeCompare(b.value)
+    );
+
+    return {
+      totalLocales: options.length,
+      options
+    };
+
   } catch (error) {
-    return { totalLocales: 0, options: [], error: error.message };
+    console.error('edgeTTSGroups Error:', error);
+    return {
+      totalLocales: 0,
+      options: [],
+      error: error?.message || 'Failed to fetch voice groups'
+    };
   }
 }
 
-/* 3. edgeTTSVoicesByGroup */
+/* 3. edgeTTSVoicesByGroup - Lấy danh sách giọng đọc đầy đủ theo Locale */
 export async function edgeTTSVoicesByGroup(payload = {}) {
-  const { group = 'zh-CN' } = payload;
-  try {
-    const options = [
-      { value: `${group}-XiaoxiaoNeural`, label: `Xiaoxiao (Female - ${group})` },
-      { value: `${group}-YunxiNeural`, label: `Yunxi (Male - ${group})` },
-      { value: `${group}-YunjianNeural`, label: `Yunjian (Male - ${group})` },
-      { value: `${group}-XiaoxiaoMultilingualNeural`, label: `Xiaoxiao Multilingual (${group})` }
-    ];
+  const { group = 'vi-VN' } = payload;
 
-    return { group, total: options.length, options };
+  try {
+    const ep = await getEndpointAndToken();
+
+    const res = await fetch(
+      `https://${ep.r}.tts.speech.microsoft.com/cognitiveservices/voices/list`,
+      {
+        headers: {
+          "Authorization": ep.t,
+          "User-Agent": USER_AGENT,
+        }
+      }
+    );
+
+    if (!res.ok) {
+      throw new Error(`Failed to fetch voices list: ${res.status}`);
+    }
+
+    const allVoices = await res.json();
+
+    const filteredVoices = allVoices.filter(
+      v => v.Locale && v.Locale.toLowerCase() === group.toLowerCase()
+    );
+
+    const options = filteredVoices.map(v => {
+      const voiceName = v.ShortName || v.Name;
+      const gender = v.Gender || 'Unknown';
+      const localName = v.LocalName || v.DisplayName || voiceName;
+
+      return {
+        value: voiceName,
+        label: `${localName} (${gender})`,
+        gender: gender,
+        localeName: v.LocaleName || '',
+        voiceType: v.VoiceType || 'Neural',
+        styles: v.StyleList || []
+      };
+    });
+
+    return {
+      group,
+      total: options.length,
+      options
+    };
+
   } catch (error) {
-    return { group, total: 0, options: [], error: error.message };
+    console.error('edgeTTSVoicesByGroup Error:', error);
+
+    return {
+      group,
+      total: 0,
+      options: [],
+      error: error?.message || 'Failed to fetch voices for group'
+    };
   }
 }
