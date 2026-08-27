@@ -7,9 +7,21 @@ const CORS_HEADERS = {
 
 const EDGE_HEADERS = {
   'User-Agent':
-    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0',
   'Accept-Encoding': 'gzip, deflate, br',
-  'Accept-Language': 'en-US,en;q=0.9'
+  'Accept-Language': 'en-US,en;q=0.9',
+  'Authority': 'speech.platform.bing.com',
+  'Pragma': 'no-cache'
+}
+
+/* Escape các ký tự XML đặc biệt trong văn bản */
+function escapeXML(str = '') {
+  return str
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;')
 }
 
 function localeToLabel(locale) {
@@ -25,15 +37,15 @@ function localeToLabel(locale) {
 }
 
 /* ===============================
-   1. edgeTTS (Dùng REST API - Không bị lỗi WebSocket)
+   1. edgeTTS (REST API Standard SSML)
 ================================ */
 export async function edgeTTS(payload = {}) {
   let {
     text,
     voice = 'en-US-AriaNeural',
     pitch = '+0Hz',
-    rate = '0%',
-    volume = '100%',
+    rate = '+0%',
+    volume = '+0%',
     format = 'mp3'
   } = payload
 
@@ -41,15 +53,20 @@ export async function edgeTTS(payload = {}) {
     return new Response('Missing text parameter', { status: 400, headers: CORS_HEADERS })
   }
 
+  // Chuẩn hóa định dạng pitch/rate/volume
+  if (typeof pitch === 'number') pitch = `${pitch >= 0 ? '+' : ''}${pitch}Hz`
+  if (typeof rate === 'number') rate = `${rate >= 0 ? '+' : ''}${rate}%`
+  if (typeof volume === 'number') volume = `${volume >= 0 ? '+' : ''}${volume}%`
+
+  if (!pitch.includes('Hz') && !pitch.includes('%')) pitch = '+0Hz'
+  if (!rate.includes('%')) rate = '+0%'
+  if (!volume.includes('%')) volume = '+0%'
+
   try {
-    // Tạo SSML XML chuẩn cho Microsoft Edge TTS
-    const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xml:lang='en-US'>
-      <voice name='${voice}'>
-        <prosody pitch='${pitch}' rate='${rate}' volume='${volume}'>
-          ${text}
-        </prosody>
-      </voice>
-    </speak>`
+    const escapedText = escapeXML(text)
+    
+    // Cấu trúc SSML chuẩn Bing Speech API
+    const ssml = `<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis' xmlns:mstts='https://www.w3.org/2001/mstts' xml:lang='en-US'><voice name='${voice}'><prosody pitch='${pitch}' rate='${rate}' volume='${volume}'>${escapedText}</prosody></voice></speak>`
 
     const response = await fetch(
       'https://speech.platform.bing.com/consumer/speech/synthesize/readaloud/single/v1?trustedclienttoken=6A5AA1D4EA5E4071A743D995589F438D',
@@ -68,7 +85,8 @@ export async function edgeTTS(payload = {}) {
     )
 
     if (!response.ok) {
-      throw new Error(`Edge API error: ${response.status} ${response.statusText}`)
+      const errText = await response.text().catch(() => '')
+      throw new Error(`Edge API error: ${response.status} ${response.statusText} - ${errText}`)
     }
 
     const audioBuffer = await response.arrayBuffer()
