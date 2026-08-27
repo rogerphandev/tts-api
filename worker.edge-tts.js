@@ -1,4 +1,4 @@
-import { EdgeTTS, Constants } from '@andresaya/edge-tts'
+import { EdgeTTS } from '@andresaya/edge-tts'
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -16,7 +16,7 @@ function localeToLabel(locale) {
 
     const [lang, region] = locale.split('-')
     const language = new Intl.DisplayNames(['en'], { type: 'language' }).of(lang)
-    const country = new Intl.DisplayNames(['en'], { type: 'region' }).of(country || region)
+    const country = new Intl.DisplayNames(['en'], { type: 'region' }).of(region)
 
     return `${language} (${country})`
   } catch {
@@ -25,51 +25,9 @@ function localeToLabel(locale) {
 }
 
 /* ===============================
-   Main Router (Cloudflare Worker)
+   1. edgeTTS → Synthesize Audio
 ================================ */
-export default {
-  async fetch(request, env, ctx) {
-    // Xử lý Preflight CORS request
-    if (request.method === 'OPTIONS') {
-      return new Response(null, { headers: CORS_HEADERS })
-    }
-
-    const url = new URL(request.url)
-    const pathname = url.pathname
-
-    // Đọc payload từ Query Parameters (GET) hoặc Body JSON (POST)
-    let payload = {}
-    if (request.method === 'POST') {
-      try {
-        payload = await request.json()
-      } catch {
-        payload = {}
-      }
-    } else {
-      payload = Object.fromEntries(url.searchParams.entries())
-    }
-
-    /* Router rules */
-    if (pathname === '/edge-tts/groups') {
-      return handleGroups()
-    }
-
-    if (pathname === '/edge-tts/voices-by-group') {
-      return handleVoicesByGroup(payload)
-    }
-
-    if (pathname === '/edge-tts' || pathname === '/') {
-      return handleTTS(payload)
-    }
-
-    return new Response('Not Found', { status: 404, headers: CORS_HEADERS })
-  }
-}
-
-/* ===============================
-   1. /edge-tts → Synthesize Audio
-================================ */
-async function handleTTS(payload) {
+export async function edgeTTS(payload) {
   let {
     text,
     voice = 'en-US-AriaNeural',
@@ -79,23 +37,14 @@ async function handleTTS(payload) {
     format = 'mp3'
   } = payload
 
-  /* ---------- Không có text → trả về Huớng dẫn / Documentation ---------- */
   if (!text || !text.trim().length) {
     const html = `
       <!DOCTYPE html>
       <html>
-        <head>
-          <title>Edge TTS API</title>
-          <meta charset="utf-8" />
-        </head>
-        <body style="font-family: sans-serif; padding: 2rem; line-height: 1.5;">
+        <head><title>Edge TTS API</title></head>
+        <body style="font-family: sans-serif; padding: 2rem;">
           <h2>Edge TTS Cloudflare Worker</h2>
-          <p>API đang hoạt động bình thường. Hãy gửi tham số <code>text</code> qua GET query hoặc POST body để tạo audio.</p>
-          <ul>
-            <li><strong>/edge-tts</strong> - Tạo file audio từ văn bản</li>
-            <li><strong>/edge-tts/groups</strong> - Lấy danh sách ngôn ngữ</li>
-            <li><strong>/edge-tts/voices-by-group?group=en-US</strong> - Lấy giọng đọc theo nhóm</li>
-          </ul>
+          <p>Truyền tham số <code>text</code> để bắt đầu tổng hợp giọng nói.</p>
         </body>
       </html>
     `
@@ -107,13 +56,13 @@ async function handleTTS(payload) {
     })
   }
 
-  /* ---------- Synthesize Audio ---------- */
   const tts = new EdgeTTS()
 
+  // Thay thế Constants bằng chuỗi trực tiếp
   const outputFormat =
     format === 'mp3'
-      ? Constants.OUTPUT_FORMAT.AUDIO_24KHZ_48KBITRATE_MONO_MP3
-      : Constants.OUTPUT_FORMAT.WEBM_16KHZ_16BIT_MONO_OPUS
+      ? 'audio-24khz-48kbitrate-mono-mp3'
+      : 'webm-16khz-16bit-mono-opus'
 
   await tts.synthesize(text, voice, {
     pitch,
@@ -128,8 +77,8 @@ async function handleTTS(payload) {
   const headers = {
     'Content-Type': format === 'mp3' ? 'audio/mpeg' : 'audio/webm; codecs=opus',
     'Accept-Ranges': 'bytes',
-    'x-audio-size': String(info.size),
-    'x-audio-duration': String(info.estimatedDuration),
+    'x-audio-size': String(info?.size || 0),
+    'x-audio-duration': String(info?.estimatedDuration || 0),
     ...CORS_HEADERS
   }
 
@@ -137,9 +86,9 @@ async function handleTTS(payload) {
 }
 
 /* =====================================
-   2. /edge-tts/groups → Locale Groups
+   2. edgeTTSGroups → Locale Groups
 ===================================== */
-async function handleGroups() {
+export async function edgeTTSGroups() {
   const tts = new EdgeTTS()
   const allVoices = await tts.getVoices()
 
@@ -155,26 +104,16 @@ async function handleGroups() {
     ).values()
   ].sort((a, b) => a.value.localeCompare(b.value))
 
-  return new Response(
-    JSON.stringify({
-      totalLocales: options.length,
-      options
-    }),
-    {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Cache-Control': 'public, max-age=86400',
-        ...CORS_HEADERS
-      }
-    }
-  )
+  return {
+    totalLocales: options.length,
+    options
+  }
 }
 
 /* =====================================
-   3. /edge-tts/voices-by-group
+   3. edgeTTSVoicesByGroup
 ===================================== */
-async function handleVoicesByGroup(payload) {
+export async function edgeTTSVoicesByGroup(payload = {}) {
   const { group = 'en-US' } = payload
 
   const tts = new EdgeTTS()
@@ -185,19 +124,9 @@ async function handleVoicesByGroup(payload) {
     label: `${v.Gender} - ${v.DisplayName}`
   }))
 
-  return new Response(
-    JSON.stringify({
-      group,
-      total: options.length,
-      options
-    }),
-    {
-      status: 200,
-      headers: {
-        'Content-Type': 'application/json; charset=utf-8',
-        'Cache-Control': 'public, max-age=86400',
-        ...CORS_HEADERS
-      }
-    }
-  )
+  return {
+    group,
+    total: options.length,
+    options
+  }
 }
