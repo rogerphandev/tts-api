@@ -92,20 +92,38 @@ async function getPayload(request) {
 }
 
 /* =========================================================
-   HELPERS & ERRORS
+   HELPERS & FORMATTING
 ========================================================= */
-function jsonError(message, status, request, extra = {}) {
-  return new Response(
-    JSON.stringify({ statusCode: status, message, ...extra }),
-    {
-      status,
-      headers: {
-        "Content-Type": "application/json; charset=utf-8",
-        "Cache-Control": "no-store",
-        ...corsHeaders(request)
-      }
+function formatJsonResponse(bodyData, status = 200, request) {
+  const cors = corsHeaders(request);
+  const responseHeaders = {
+    "content-type": "application/json; charset=utf-8",
+    "Cache-Control": "no-store",
+    "Access-Control-Allow-Origin": cors["Access-Control-Allow-Origin"] || "*",
+    "Access-Control-Allow-Headers": cors["Access-Control-Allow-Headers"] || "*",
+    "Access-Control-Allow-Methods": cors["Access-Control-Allow-Methods"] || "*"
+  };
+
+  const payloadBody = typeof bodyData === "string" ? bodyData : JSON.stringify(bodyData);
+
+  const wrapper = {
+    statusCode: status,
+    headers: responseHeaders,
+    body: payloadBody
+  };
+
+  return new Response(JSON.stringify(wrapper), {
+    status: 200,
+    headers: {
+      "Content-Type": "application/json; charset=utf-8",
+      ...corsHeaders(request)
     }
-  );
+  });
+}
+
+function jsonError(message, status, request, extra = {}) {
+  const errorPayload = { statusCode: status, message, ...extra };
+  return formatJsonResponse(errorPayload, status, request);
 }
 
 /* =========================================================
@@ -130,52 +148,37 @@ export default {
       delete payload.action;
 
       /* ===================================================
-          EDGE TTS ENGINE (FIXED)
-      =================================================== */
+         EDGE TTS ENGINE
+      ================================================   */
       if (engine === "edge") {
         let result;
 
         if (action === "groups") {
           result = await edgeTTSGroups(payload);
+          return formatJsonResponse(result, 200, request);
         } else if (action === "voices-by-group") {
           result = await edgeTTSVoicesByGroup(payload);
+          return formatJsonResponse(result, 200, request);
         } else {
           result = await edgeTTS(payload);
         }
 
-        // Trường hợp 1: Trả về Native Fetch Response (Tối ưu nhất cho CF Worker)
+        // Trường hợp trả về Native Fetch Response (Audio stream)
         if (result instanceof Response) {
           return addCors(result, request);
         }
 
-        // Trường hợp 2: Trả về dạng object chứa { statusCode, headers, body }
+        // Nếu trả về object tùy chỉnh lỗi hoặc dữ liệu
         if (result && typeof result === "object" && "body" in result) {
-          const headers = new Headers(result.headers || {});
-          const cors = corsHeaders(request);
-          for (const [k, v] of Object.entries(cors)) {
-            headers.set(k, v);
-          }
-
-          return new Response(result.body, {
-            status: result.statusCode || 200,
-            headers
-          });
+          return formatJsonResponse(result.body, result.statusCode || 200, request);
         }
 
-        // Trường hợp 3: Trả về mảng/đối tượng JSON thông thường
-        return new Response(JSON.stringify(result || {}), {
-          status: 200,
-          headers: {
-            "Content-Type": "application/json; charset=utf-8",
-            "Cache-Control": "no-store",
-            ...corsHeaders(request)
-          }
-        });
+        return formatJsonResponse(result || {}, 200, request);
       }
 
       /* ===================================================
-          TIKTOK TTS ENGINE
-      =================================================== */
+         TIKTOK TTS ENGINE
+      ================================================   */
       if (engine === "tiktok") {
         try {
           const audioBuffer = await generateTikTokTTS(payload);
@@ -200,8 +203,8 @@ export default {
       }
 
       /* ===================================================
-          GOOGLE TTS ENGINE
-      =================================================== */
+         GOOGLE TTS ENGINE
+      ================================================   */
       if (engine === "google") {
         try {
           const result = await googleTTS(payload);
@@ -225,14 +228,7 @@ export default {
             return addCors(response, request);
           }
 
-          return new Response(JSON.stringify(result || {}), {
-            status: 200,
-            headers: {
-              "Content-Type": "application/json; charset=utf-8",
-              "Cache-Control": "no-store",
-              ...corsHeaders(request)
-            }
-          });
+          return formatJsonResponse(result || {}, 200, request);
         } catch (error) {
           return jsonError(
             error?.message || "Google TTS error",
@@ -243,8 +239,8 @@ export default {
       }
 
       /* ===================================================
-          UNKNOWN ENGINE
-      =================================================== */
+         UNKNOWN ENGINE
+      ================================================   */
       return jsonError(`Unknown TTS engine: ${engine}`, 400, request, {
         availableEngines: ["edge", "google", "tiktok"]
       });
