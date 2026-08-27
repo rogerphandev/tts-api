@@ -295,7 +295,9 @@ export async function edgeTTSGroups() {
   }
 }
 
-/* 3. edgeTTSVoicesByGroup - Lấy danh sách giọng đọc đầy đủ theo Locale */
+/* ====================================================================
+   3. edgeTTSVoicesByGroup (Đã cập nhật Regex làm sạch Voice Name)
+==================================================================== */
 export async function edgeTTSVoicesByGroup(payload = {}) {
   const { group = 'vi-VN' } = payload;
 
@@ -323,13 +325,27 @@ export async function edgeTTSVoicesByGroup(payload = {}) {
     );
 
     const options = filteredVoices.map(v => {
-      // Lấy ShortName chuẩn (VD: "en-US-AndrewNeural"), không lấy Name chứa suffix dài
-      const voiceName = v.ShortName || v.Name;
+      // 1. Lấy tên gốc từ ShortName hoặc Name
+      let rawVoiceName = v.ShortName || v.Name || '';
+
+      // 2. Nếu Name dạng "Microsoft Server Speech Text to Speech Voice (en-US, AvaNeural)", trích xuất mã giọng
+      if (rawVoiceName.includes('(') && rawVoiceName.includes(')')) {
+        const match = rawVoiceName.match(/\(([^,]+),\s*([^)]+)\)/);
+        if (match) {
+          const localePart = match[1].trim(); // ex: en-US
+          const voicePart = match[2].trim();  // ex: AvaNeural hoặc Ava:DragonHDLatestNeural
+          rawVoiceName = `${localePart}-${voicePart}`;
+        }
+      }
+
+      // 3. Xử lý triệt để: Xóa bỏ phần suffix ":DragonHD..." phía sau (ex: "en-US-Ava:DragonHDLatestNeural" -> "en-US-AvaNeural")
+      const cleanVoiceValue = rawVoiceName.replace(/:[A-Za-z0-9]+/g, '');
+
       const gender = v.Gender || 'Unknown';
-      const localName = v.LocalName || v.DisplayName || voiceName;
+      const localName = v.LocalName || v.DisplayName || cleanVoiceValue;
 
       return {
-        value: voiceName, // Đảm bảo trả về "en-US-AndrewNeural"
+        value: cleanVoiceValue, // Trả về mã chuẩn: "en-US-AvaNeural"
         label: `${localName} (${gender})`,
         gender: gender,
         localeName: v.LocaleName || '',
