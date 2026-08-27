@@ -296,7 +296,7 @@ export async function edgeTTSGroups() {
 }
 
 /* ====================================================================
-   3. edgeTTSVoicesByGroup (Đã cập nhật Regex làm sạch Voice Name)
+   3. edgeTTSVoicesByGroup (Cập nhật để bắt buộc có chữ Neural)
 ==================================================================== */
 export async function edgeTTSVoicesByGroup(payload = {}) {
   const { group = 'vi-VN' } = payload;
@@ -325,27 +325,31 @@ export async function edgeTTSVoicesByGroup(payload = {}) {
     );
 
     const options = filteredVoices.map(v => {
-      // 1. Lấy tên gốc từ ShortName hoặc Name
       let rawVoiceName = v.ShortName || v.Name || '';
 
-      // 2. Nếu Name dạng "Microsoft Server Speech Text to Speech Voice (en-US, AvaNeural)", trích xuất mã giọng
+      // 1. Trích xuất nếu tên dạng hiển thị dài của Microsoft
       if (rawVoiceName.includes('(') && rawVoiceName.includes(')')) {
         const match = rawVoiceName.match(/\(([^,]+),\s*([^)]+)\)/);
         if (match) {
-          const localePart = match[1].trim(); // ex: en-US
-          const voicePart = match[2].trim();  // ex: AvaNeural hoặc Ava:DragonHDLatestNeural
+          const localePart = match[1].trim(); 
+          const voicePart = match[2].trim();  
           rawVoiceName = `${localePart}-${voicePart}`;
         }
       }
 
-      // 3. Xử lý triệt để: Xóa bỏ phần suffix ":DragonHD..." phía sau (ex: "en-US-Ava:DragonHDLatestNeural" -> "en-US-AvaNeural")
-      const cleanVoiceValue = rawVoiceName.replace(/:[A-Za-z0-9]+/g, '');
+      // 2. Xóa bỏ phần phụ phí/suffix phía sau dấu hai chấm (như :DragonHD...)
+      let cleanVoiceValue = rawVoiceName.replace(/:[A-Za-z0-9]+/g, '');
+
+      // 3. Đảm bảo nếu chưa có chữ "Neural" ở cuối thì tự động nối thêm vào
+      if (!cleanVoiceValue.toLowerCase().endsWith('neural')) {
+        cleanVoiceValue += 'Neural';
+      }
 
       const gender = v.Gender || 'Unknown';
       const localName = v.LocalName || v.DisplayName || cleanVoiceValue;
 
       return {
-        value: cleanVoiceValue, // Trả về mã chuẩn: "en-US-AvaNeural"
+        value: cleanVoiceValue, // Kết quả: en-US-AvaNeural
         label: `${localName} (${gender})`,
         gender: gender,
         localeName: v.LocaleName || '',
