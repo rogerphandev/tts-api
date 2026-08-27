@@ -18,7 +18,6 @@ const CORS_HEADERS = {
   'Cache-Control': 'no-store'
 };
 
-// Cấu trúc cache Endpoint & Token trên Worker
 let endpointCache = null;
 let expiredAt = null;
 
@@ -104,15 +103,41 @@ function escapeHtml(text = '') {
     .replace(/'/g, "&#x27;");
 }
 
-function buildSSML(text, voiceName, rateNum, pitchNum, style = "general") {
+function parseOutputFormat(formatStr) {
+  if (!formatStr) return DEFAULT_OUTPUT_FORMAT;
+  const fmt = formatStr.toLowerCase();
+  if (fmt === 'mp3') return 'audio-24khz-48kbitrate-mono-mp3';
+  if (fmt === 'wav' || fmt === 'riff') return 'riff-24khz-16bit-mono-pcm';
+  if (fmt === 'webm' || fmt === 'opus') return 'webm-24khz-16bit-24kbps-mono-opus';
+  return formatStr;
+}
+
+function formatProsodyParam(val, defaultVal = "+0%") {
+  if (val === undefined || val === null || val === "") return defaultVal;
+  
+  let str = String(val).trim();
+  
+  if (/^-?\d+$/.test(str)) {
+    const num = parseInt(str, 10);
+    return num >= 0 ? `+${num}%` : `${num}%`;
+  }
+  
+  if (/^[+-]\d+Hz$/i.test(str)) {
+    str = str.replace(/Hz$/i, "%");
+  }
+  
+  return str;
+}
+
+function buildSSML(text, voiceName, rateStr, pitchStr, volumeStr, style = "general") {
   const escapedText = escapeHtml(text);
+  const prosodyTag = `<prosody rate="${rateStr}" pitch="${pitchStr}" volume="${volumeStr}">${escapedText}</prosody>`;
+
   if (style && style !== "general") {
     return `<speak xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="http://www.w3.org/2001/mstts" version="1.0" xml:lang="en-US">
 <voice name="${voiceName}">
     <mstts:express-as style="${style}" styledegree="1.0" role="default">
-        <prosody rate="${rateNum}%" pitch="${pitchNum}%">
-            ${escapedText}
-        </prosody>
+        ${prosodyTag}
     </mstts:express-as>
 </voice>
 </speak>`;
@@ -120,9 +145,7 @@ function buildSSML(text, voiceName, rateNum, pitchNum, style = "general") {
 
   return `<speak xmlns="http://www.w3.org/2001/10/synthesis" xmlns:mstts="http://www.w3.org/2001/mstts" version="1.0" xml:lang="en-US">
 <voice name="${voiceName}">
-    <prosody rate="${rateNum}%" pitch="${pitchNum}%">
-        ${escapedText}
-    </prosody>
+    ${prosodyTag}
 </voice>
 </speak>`;
 }
@@ -139,7 +162,6 @@ function localeToLabel(locale) {
   }
 }
 
-/* Auth Token Cache Manager */
 export async function getEndpointAndToken() {
   const currentTime = Math.floor(Date.now() / 1000);
   if (!expiredAt || currentTime > expiredAt - 60) {
@@ -150,17 +172,16 @@ export async function getEndpointAndToken() {
   return endpointCache;
 }
 
-/* Core Synthesize Chunk Function */
-async function synthesizeChunk(text, voiceName, rateNum, pitchNum, ep, format, style) {
+async function synthesizeChunk(text, voiceName, rateStr, pitchStr, volumeStr, ep, format, style) {
   const url = `https://${ep.r}.tts.speech.microsoft.com/cognitiveservices/v1`;
-  const ssml = buildSSML(text, voiceName, rateNum, pitchNum, style);
+  const ssml = buildSSML(text, voiceName, rateStr, pitchStr, volumeStr, style);
 
   const response = await fetch(url, {
     method: "POST",
     headers: {
       "Authorization": ep.t,
       "Content-Type": "application/ssml+xml",
-      "X-Microsoft-OutputFormat": format || DEFAULT_OUTPUT_FORMAT,
+      "X-Microsoft-OutputFormat": format,
       "User-Agent": USER_AGENT,
     },
     body: ssml,
@@ -174,33 +195,36 @@ async function synthesizeChunk(text, voiceName, rateNum, pitchNum, ep, format, s
 }
 
 /* ====================================================================
-   EXPORTS: MAIN TTS API FUNCTIONS
+   EXPORTS
 ==================================================================== */
 
 /* 1. edgeTTS - Chuyển đổi văn bản thành giọng nói */
 export async function edgeTTS(payload = {}) {
   let {
     text,
-    voice = "vi-VN-HoaiMyNeural",
-    rate = "0%",
-    pitch = "0%",
+    voice = "en-US-AvaNeural",
+    rate = "+0%",
+    pitch = "+0%",
+    volume = "+0%",
     style = "general",
-    format = DEFAULT_OUTPUT_FORMAT
+    format = "mp3"
   } = payload;
 
   if (!text || !text.trim().length) {
     return new Response('Missing text parameter', { status: 400, headers: CORS_HEADERS });
   }
 
-  const rateNum = String(rate).replace(/[%Hz]/g, "").replace(/^\+/, "") || "0";
-  const pitchNum = String(pitch).replace(/[%Hz]/g, "").replace(/^\+/, "") || "0";
+  const safeRate = formatProsodyParam(rate, "+0%");
+  const safePitch = formatProsodyParam(pitch, "+0%");
+  const safeVolume = formatProsodyParam(volume, "+0%");
+  const azureFormat = parseOutputFormat(format);
 
   try {
     const ep = await getEndpointAndToken();
     let audioBuffer;
 
     if (text.length <= MAX_CHUNK_SIZE) {
-      audioBuffer = await synthesizeChunk(text, voice, rateNum, pitchNum, ep, format, style);
+      audioBuffer = await synthesizeChunk(text, voice, safeRate, safePitch, safeVolume, ep, azureFormat, style);
     } else {
       const chunks = [];
       for (let i = 0; i < text.length; i += MAX_CHUNK_SIZE) {
@@ -208,7 +232,7 @@ export async function edgeTTS(payload = {}) {
       }
 
       const audioChunks = await Promise.all(
-        chunks.map(chunk => synthesizeChunk(chunk, voice, rateNum, pitchNum, ep, format, style))
+        chunks.map(chunk => synthesizeChunk(chunk, voice, safeRate, safePitch, safeVolume, ep, azureFormat, style))
       );
 
       const totalLen = audioChunks.reduce((sum, c) => sum + c.length, 0);
@@ -244,7 +268,7 @@ export async function edgeTTS(payload = {}) {
   }
 }
 
-/* 2. edgeTTSGroups - Lấy đầy đủ 142+ Locales thời gian thực */
+/* 2. edgeTTSGroups - Lấy đầy đủ 142+ Locales */
 export async function edgeTTSGroups() {
   try {
     const ep = await getEndpointAndToken();
@@ -295,9 +319,7 @@ export async function edgeTTSGroups() {
   }
 }
 
-/* ====================================================================
-   3. edgeTTSVoicesByGroup (Cập nhật để bắt buộc có chữ Neural)
-==================================================================== */
+/* 3. edgeTTSVoicesByGroup - Lấy danh sách giọng đọc chuẩn (Sửa lỗi AvaNeural) */
 export async function edgeTTSVoicesByGroup(payload = {}) {
   const { group = 'vi-VN' } = payload;
 
@@ -327,7 +349,6 @@ export async function edgeTTSVoicesByGroup(payload = {}) {
     const options = filteredVoices.map(v => {
       let rawVoiceName = v.ShortName || v.Name || '';
 
-      // 1. Trích xuất nếu tên dạng hiển thị dài của Microsoft
       if (rawVoiceName.includes('(') && rawVoiceName.includes(')')) {
         const match = rawVoiceName.match(/\(([^,]+),\s*([^)]+)\)/);
         if (match) {
@@ -337,10 +358,8 @@ export async function edgeTTSVoicesByGroup(payload = {}) {
         }
       }
 
-      // 2. Xóa bỏ phần phụ phí/suffix phía sau dấu hai chấm (như :DragonHD...)
       let cleanVoiceValue = rawVoiceName.replace(/:[A-Za-z0-9]+/g, '');
 
-      // 3. Đảm bảo nếu chưa có chữ "Neural" ở cuối thì tự động nối thêm vào
       if (!cleanVoiceValue.toLowerCase().endsWith('neural')) {
         cleanVoiceValue += 'Neural';
       }
@@ -349,7 +368,7 @@ export async function edgeTTSVoicesByGroup(payload = {}) {
       const localName = v.LocalName || v.DisplayName || cleanVoiceValue;
 
       return {
-        value: cleanVoiceValue, // Kết quả: en-US-AvaNeural
+        value: cleanVoiceValue,
         label: `${localName} (${gender})`,
         gender: gender,
         localeName: v.LocaleName || '',
