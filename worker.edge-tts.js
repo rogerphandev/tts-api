@@ -319,7 +319,7 @@ export async function edgeTTSGroups() {
   }
 }
 
-/* 3. edgeTTSVoicesByGroup - Lấy danh sách giọng đọc chuẩn (Sửa lỗi AvaNeural) */
+/* 3. edgeTTSVoicesByGroup - Đã sửa lỗi xử lý tên giọng đọc (HD, Dragon, Multilingual...) */
 export async function edgeTTSVoicesByGroup(payload = {}) {
   const { group = 'vi-VN' } = payload;
 
@@ -347,22 +347,21 @@ export async function edgeTTSVoicesByGroup(payload = {}) {
     );
 
     const options = filteredVoices.map(v => {
-      let rawVoiceName = v.ShortName || v.Name || '';
+      // 1. Ưu tiên lấy trực tiếp ShortName (ví dụ: "en-US-AriaNeural" hoặc "vi-VN-HoaiMyNeural")
+      let cleanVoiceValue = v.ShortName || '';
 
-      if (rawVoiceName.includes('(') && rawVoiceName.includes(')')) {
-        const match = rawVoiceName.match(/\(([^,]+),\s*([^)]+)\)/);
+      // 2. Nếu ShortName rỗng mới tiến hành parse từ trường Name
+      if (!cleanVoiceValue && v.Name) {
+        const match = v.Name.match(/\(([^,]+),\s*([^)]+)\)/);
         if (match) {
-          const localePart = match[1].trim(); 
-          const voicePart = match[2].trim();  
-          rawVoiceName = `${localePart}-${voicePart}`;
+          cleanVoiceValue = `${match[1].trim()}-${match[2].trim()}`;
+        } else {
+          cleanVoiceValue = v.Name;
         }
       }
 
-      let cleanVoiceValue = rawVoiceName.replace(/:[A-Za-z0-9]+/g, '');
-
-      if (!cleanVoiceValue.toLowerCase().endsWith('neural')) {
-        cleanVoiceValue += 'Neural';
-      }
+      // 3. Loại bỏ bớt các ký tự định danh phụ nếu có (VD: ":DragonHDLatest")
+      cleanVoiceValue = cleanVoiceValue.split(':')[0].trim();
 
       const gender = v.Gender || 'Unknown';
       const localName = v.LocalName || v.DisplayName || cleanVoiceValue;
