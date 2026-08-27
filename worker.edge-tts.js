@@ -323,12 +323,13 @@ export async function edgeTTSVoicesByGroup(payload = {}) {
     );
 
     const options = filteredVoices.map(v => {
+      // Lấy ShortName chuẩn (VD: "en-US-AndrewNeural"), không lấy Name chứa suffix dài
       const voiceName = v.ShortName || v.Name;
       const gender = v.Gender || 'Unknown';
       const localName = v.LocalName || v.DisplayName || voiceName;
 
       return {
-        value: voiceName,
+        value: voiceName, // Đảm bảo trả về "en-US-AndrewNeural"
         label: `${localName} (${gender})`,
         gender: gender,
         localeName: v.LocaleName || '',
