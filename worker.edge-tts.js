@@ -319,7 +319,9 @@ export async function edgeTTSGroups() {
   }
 }
 
-/* 3. edgeTTSVoicesByGroup - Đã sửa lỗi xử lý tên giọng đọc (HD, Dragon, Multilingual...) */
+/* ====================================================================
+   3. edgeTTSVoicesByGroup - Logic giữ nguyên nếu có ':', thêm 'Neural' nếu không
+==================================================================== */
 export async function edgeTTSVoicesByGroup(payload = {}) {
   const { group = 'vi-VN' } = payload;
 
@@ -347,27 +349,35 @@ export async function edgeTTSVoicesByGroup(payload = {}) {
     );
 
     const options = filteredVoices.map(v => {
-      // 1. Ưu tiên lấy trực tiếp ShortName (ví dụ: "en-US-AriaNeural" hoặc "vi-VN-HoaiMyNeural")
-      let cleanVoiceValue = v.ShortName || '';
+      // 1. Ưu tiên lấy ShortName gốc từ API
+      let rawVoiceValue = v.ShortName || v.Name || '';
 
-      // 2. Nếu ShortName rỗng mới tiến hành parse từ trường Name
-      if (!cleanVoiceValue && v.Name) {
-        const match = v.Name.match(/\(([^,]+),\s*([^)]+)\)/);
+      // 2. Nếu tên nằm trong ngoặc dạng: "Microsoft Server Speech ... (en-US, Andrew:DragonHDLatestNeural)"
+      if (rawVoiceValue.includes('(') && rawVoiceValue.includes(')')) {
+        const match = rawVoiceValue.match(/\(([^,]+),\s*([^)]+)\)/);
         if (match) {
-          cleanVoiceValue = `${match[1].trim()}-${match[2].trim()}`;
-        } else {
-          cleanVoiceValue = v.Name;
+          rawVoiceValue = `${match[1].trim()}-${match[2].trim()}`;
         }
       }
 
-      // 3. Loại bỏ bớt các ký tự định danh phụ nếu có (VD: ":DragonHDLatest")
-      cleanVoiceValue = cleanVoiceValue.split(':')[0].trim();
+      let finalVoiceValue = rawVoiceValue.trim();
+
+      // 3. XỬ LÝ THEO YÊU CẦU:
+      if (finalVoiceValue.includes(':')) {
+        // Có dấu ':' -> Giữ ĐÚNG nguyên bản
+        finalVoiceValue = finalVoiceValue;
+      } else {
+        // Không có dấu ':' -> Kiểm tra và thêm 'Neural' nếu thiếu
+        if (!finalVoiceValue.toLowerCase().endsWith('neural')) {
+          finalVoiceValue += 'Neural';
+        }
+      }
 
       const gender = v.Gender || 'Unknown';
-      const localName = v.LocalName || v.DisplayName || cleanVoiceValue;
+      const localName = v.LocalName || v.DisplayName || finalVoiceValue;
 
       return {
-        value: cleanVoiceValue,
+        value: finalVoiceValue, // Trả về theo đúng quy tắc
         label: `${localName} (${gender})`,
         gender: gender,
         localeName: v.LocaleName || '',
